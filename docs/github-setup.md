@@ -1,25 +1,23 @@
-# GitHub 현황 이슈 설정 (선택)
+# GitHub 보드 설정 (AI Board)
 
-실시간 보드(`ai-board`)는 GitHub 없이 내 PC 에서 동작한다. GitHub 연동은 **밖에서 보기와 알림**을 위한 선택 기능이다.
+모든 프로젝트·세션의 작업 카드는 **추적 레포 하나**(예: `<내계정>/work`, 비공개)의 이슈로 만들어지고, 그 레포에 연결된 **GitHub Projects 보드 "AI Board"** 에서 본다.
 
 ```
-각 프로젝트의 docs/STATUS.md  ──(바뀌었을 때만, 최소 1분 간격)──▶  추적 레포 <내계정>/work (비공개)
-   ↑ AI 세션이 갱신                                                   ├ [trendist] 현황     ← 본문 = STATUS.md
-                                                                     ├ [coinsensor] 현황
-                                                                     └ [eventor] 현황
-                                                                       새 🔴 판단 필요 · 🟢 완료 → 코멘트 → GitHub 알림(메일·모바일 앱)
+claude-personal / claude-work 세션 ─ 훅 ─▶ 로컬 대기열 ─▶ 전송기 1개 ─▶ 추적 레포 이슈 + AI Board
+ (여러 프로젝트, 여러 세션 동시에)            (변경 합치기)   (순서대로·간격 두고)   Backlog · AI작업중 · 판단필요 · 검토대기 · 완료
 ```
-- 프로젝트당 이슈 **하나**만 쓰고 본문을 고친다. 일반 REST API 만 쓰므로 여러 세션이 동시에 일해도 API 한도에 걸리지 않는다.
 - 작업 레포(회사·조직 레포 포함)에는 아무것도 만들지 않는다. 작업 레포 권한이 없어도 된다.
-- 세션별 실시간 상태(작업 중·입력 대기 등)는 너무 자주 바뀌어서 GitHub 에 올리지 않고 로컬 보드에서만 본다.
+- 보드·필드·컬럼 ID 는 설정 때 한 번 받아 두므로 컬럼 이동은 API 호출 1번이다. 모든 세션의 변경은 전송기 하나가 순서대로 보내고, 카드 본문은 1분에 한 번까지만 고친다. 세션 여러 개가 동시에 일해도 GitHub API 한도(시간당 5000)에 한참 못 미친다.
+- GitHub 가 잠시 막혀도 작업은 로컬 대기열에 남았다가 풀리면 보내진다.
 
 ## 필요한 계정·권한
 | 항목 | 왜 | 받는 법 / 확인 |
 |---|---|---|
-| GitHub 계정 | 추적 레포가 GitHub 에 있다 | https://github.com/signup |
-| GitHub CLI 로그인 | 현황 이슈 생성·갱신 | `gh auth login` → `gh auth status` |
-| 추적 레포 (비공개) | 현황 이슈가 모이는 곳 | `ai-board setup <내계정>/work --create` 가 만든다. 직접 만들려면 GitHub 웹 → New repository → **Private** |
-| (팀 공용) 추적 레포 쓰기 권한 | 여러 사람이 한 레포에 모을 때 | 레포 소유자가 Settings → Collaborators 에서 초대 → `ai-board setup <owner>/<repo>` |
+| GitHub 계정 | 보드·추적 레포가 GitHub 에 있다 | https://github.com/signup |
+| GitHub CLI 로그인 | 카드 생성·이동·코멘트 | `gh auth login -s project` → `gh auth status` |
+| `project` 권한 | Projects 보드 읽기·쓰기. 기본 로그인에는 없다 | `gh auth status` 의 Token scopes 에 `'project'`. 없으면 `gh auth refresh -h github.com -s project` |
+| 추적 레포 (비공개) | 카드(이슈)가 모이는 곳 | `ai-board setup <내계정>/work --create` 가 만든다. 직접 만들려면 GitHub 웹 → New repository → **Private** |
+| (팀 공용) 쓰기 권한 | 여러 사람이 한 보드를 쓸 때 | 레포 소유자가 Settings → Collaborators, 보드 Settings → Manage access 에 추가 → `ai-board setup <owner>/<repo> --board <번호>` |
 
 토큰은 GitHub CLI 가 `~/.config/gh` 에 보관한다. 이 레포에는 저장되지 않는다.
 
@@ -33,27 +31,25 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubc
 sudo apt update && sudo apt install gh -y
 ```
 
-## 2. 로그인
+## 2. 로그인 (project 권한 포함)
 ```bash
-gh auth login        # GitHub.com → HTTPS → 브라우저 인증, 본인 계정으로 승인
-gh auth status       # Logged in 확인
+gh auth login -s project     # GitHub.com → HTTPS → 브라우저 인증, 본인 계정으로 승인
+gh auth status               # Token scopes 에 'project' 확인
 ```
 
-## 3. 추적 레포 연결
+## 3. 추적 레포 + 보드
 ```bash
-ai-board setup <내계정>/work --create   # 없으면 비공개로 만들고 연결, 기존 프로젝트 현황을 바로 올림
-ai-board status                         # 연결 상태·마지막 반영 시각·최근 오류
+ai-board setup <내계정>/work --create      # 레포가 없으면 비공개로 만들고, 보드 생성·컬럼·검토필요도·레포 연결까지
+ai-board setup <owner>/<repo> --board 3    # 이미 있는 보드(팀 보드 등)를 쓸 때
+ai-board status                            # 로그인·보드·대기열·최근 오류
 ```
-설정은 `~/ai-workflow/.board` 한 줄(`BOARD_REPO=…`)이고 gitignore 대상이다.
 
-## 4. 알림 받기 (권장)
-- 휴대폰에 **GitHub 모바일 앱**을 설치하고 로그인하면, 현황 이슈에 달리는 🔴/🟢 코멘트가 푸시로 온다.
-- 추적 레포 오른쪽 위 **Watch → All Activity** 로 두면 메일·앱 알림이 확실히 온다.
-- 레포 첫 화면에 현황 이슈를 고정(Pin issue, 최대 3개)해 두면 한눈에 보인다.
+## 4. 웹에서 1회 (1분)
+1. 보드 오른쪽 위 `⋯` → **Workflows** → *Item closed* 를 켜고 Status 를 **완료** 로 → 이슈를 닫으면 카드가 완료로 간다.
+2. 보기를 **Board** 레이아웃으로 둔다 (Status 기준 칸반).
+3. 프로젝트별 탭: 새 보기(View) → 필터에 `label:proj:trendist` → Save. 프로젝트마다 하나씩.
+4. 카드에 `검토필요도`, `Labels` 필드를 보이게 하면 우선순위가 한눈에 보인다.
 
-## 수동 명령
-```bash
-ai-board sync            # 지금 폴더 프로젝트를 바로 반영
-ai-board sync --all      # 모든 프로젝트 반영
-```
-평소에는 훅이 Claude 응답이 끝날 때와 세션이 끝날 때 자동으로 반영한다.
+## 5. 알림 받기
+- 휴대폰에 GitHub 모바일 앱을 깔고 로그인하면 카드에 달리는 **❓ 확인이 필요합니다 / ✅ 작업 보고** 코멘트가 푸시로 온다.
+- 추적 레포 **Watch → All Activity** 로 두면 메일·앱 알림이 확실하다.

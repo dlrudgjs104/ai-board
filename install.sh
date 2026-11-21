@@ -100,13 +100,13 @@ case ":$PATH:" in
     fi ;;
 esac
 
-# ---------------------------------------------------------------- 4. GitHub 현황 이슈 (선택)
-step "4. GitHub 현황 이슈 연동 (선택)"
+# ---------------------------------------------------------------- 4. GitHub 보드 (AI Board)
+step "4. GitHub 보드 연동 (AI Board)"
 if [[ $board == ask && $mode == install ]]; then
-  echo "    실시간 보드(ai-board)는 GitHub 없이 내 PC 에서 동작합니다."
-  echo "    연동하면 프로젝트마다 비공개 추적 레포(기본 <내계정>/work)에 '현황' 이슈가 하나씩 생기고,"
-  echo "    STATUS.md 가 바뀔 때 자동으로 갱신됩니다. 휴대폰 GitHub 앱으로 보고, 🔴 판단 필요·🟢 완료는 알림으로 받습니다."
-  echo "    필요한 것: GitHub 계정, GitHub CLI, 본인 계정 로그인, 추적 레포(없으면 여기서 비공개로 만듦)"
+  echo "    여러 프로젝트·세션의 작업이 GitHub Projects 보드 하나에 카드로 실시간 정리됩니다."
+  echo "    (작업 시작 → AI작업중, 질문 → 판단필요, 답변 끝 → 검토대기 + 보고 코멘트, 이슈 닫기 → 완료)"
+  echo "    카드는 작업 레포가 아니라 비공개 추적 레포(기본 <내계정>/work)의 이슈로 쌓입니다."
+  echo "    필요한 것: GitHub 계정, GitHub CLI, 본인 계정 로그인 + project 권한, 추적 레포(없으면 여기서 비공개로 만듦)"
   ask "지금 연동할까요?" && board=yes || board=no
 fi
 
@@ -126,26 +126,31 @@ if [[ $mode == check || $board == yes ]]; then
     bad "GitHub CLI 없음 → docs/github-setup.md 1단계 (https://cli.github.com)"
   else
     ok "GitHub CLI $(gh --version | head -1 | awk '{print $3}')"
-    if ! gh auth status >/dev/null 2>&1 && [[ $mode == install ]] && ask "본인 GitHub 계정으로 로그인할까요? (브라우저 인증)"; then
+    if ! gh auth status >/dev/null 2>&1 && [[ $mode == install ]] && ask "본인 GitHub 계정으로 로그인할까요? (브라우저 인증, 보드용 project 권한 포함)"; then
       echo "    표시되는 8자리 코드를 브라우저(https://github.com/login/device)에 입력하고, 본인 계정으로 승인하세요."
-      gh auth login -h github.com -p https -w || true
+      gh auth login -h github.com -p https -w -s project || true
     fi
     if ! gh auth status >/dev/null 2>&1; then
-      bad "GitHub 로그인 안 됨 → gh auth login"
+      bad "GitHub 로그인 안 됨 → gh auth login -s project"
     else
       me="$(gh api user -q .login)"
       ok "로그인: $me"
-      repo="$(sed -n 's/^BOARD_REPO=//p' "$ROOT/.board" 2>/dev/null || true)"
-      if [[ -n "$repo" ]]; then
-        ok "추적 레포: $repo"
-      elif [[ $mode == install ]]; then
+      if ! gh auth status 2>&1 | grep -q "'project'"; then
+        if [[ $mode == install ]] && ask "보드에 필요한 project 권한이 없습니다. 추가할까요? (브라우저 인증)"; then
+          gh auth refresh -h github.com -s project || true
+        fi
+      fi
+      gh auth status 2>&1 | grep -q "'project'" && ok "project 권한" || bad "project 권한 없음 → gh auth refresh -h github.com -s project"
+      if [[ -f "${AI_WORKFLOW_STATE:-$HOME/.ai-workflow}/board.json" ]]; then
+        ok "보드 설정됨 ($(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("url",""), "/", d.get("repo",""))' "${AI_WORKFLOW_STATE:-$HOME/.ai-workflow}/board.json"))"
+      elif [[ $mode == install ]] && gh auth status 2>&1 | grep -q "'project'"; then
         repo="$me/work"
         [[ $yes == 1 || ! -t 0 ]] || { read -r -p "  ? 추적 레포 이름 [$repo]: " r; repo="${r:-$repo}"; [[ "$repo" == */* ]] || repo="$me/$repo"; }
-        if gh repo view "$repo" >/dev/null 2>&1; then "$ROOT/bin/ai-board" setup "$repo"
+        if gh api "repos/$repo" >/dev/null 2>&1; then "$ROOT/bin/ai-board" setup "$repo"
         elif ask "$repo 가 없습니다. 비공개 레포로 만들까요?"; then "$ROOT/bin/ai-board" setup "$repo" --create
         else warn "추적 레포를 만든 뒤: ai-board setup $repo"; fi
       else
-        warn "추적 레포 미설정 → ai-board setup <내계정>/work"
+        warn "보드 미설정 → ai-board setup <내계정>/work"
       fi
     fi
   fi
@@ -160,6 +165,6 @@ cat <<EOF
     ai-init -n ~/myproject       # 프로젝트에 만들 문서 미리 보기
     ai-init ~/myproject          # docs/STATUS.md 등 생성 (기존 파일은 덮어쓰지 않음)
     cd ~/myproject && claude-personal   # 워크플로우 적용 세션 시작
-    ai-board                     # 실시간 작업 보드 열기 (브라우저)
+    ai-board                     # GitHub 보드(AI Board) 열기
   그냥 claude 로 시작한 세션에는 워크플로우가 적용되지 않습니다.
 EOF

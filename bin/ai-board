@@ -1,41 +1,29 @@
 #!/usr/bin/env python3
-"""AI 작업 보드: 여러 프로젝트·여러 Claude 세션의 진행 현황을 한 화면에서 본다.
+"""AI Board: 여러 프로젝트·여러 Claude 세션의 작업을 GitHub Projects 보드 하나에서 본다.
 
-  ai-board                       대시보드 열기 (로컬 서버를 띄우고 브라우저로 연다)
-  ai-board list                  터미널에서 한눈에 보기 (세션 상태 + 프로젝트별 🔴🟡⚪)
-  ai-board task "할 일" [-p 이름]  프로젝트 STATUS.md 의 ⚪ 예정에 할 일 추가 (기본: 현재 폴더 프로젝트)
-  ai-board setup <owner/repo> [--create]   GitHub 현황 이슈를 둘 추적 레포 설정 (없으면 --create 로 비공개 생성)
-  ai-board sync [--all|-p 이름]  STATUS.md → GitHub 현황 이슈 동기화 (보통은 훅이 자동으로 함)
-  ai-board status                설정·GitHub 로그인·서버 상태 점검
-  ai-board stop                  대시보드 서버 끄기
+  ai-board                        보드를 브라우저로 열기
+  ai-board list                   터미널에서 보기 (실행 중인 세션 + 보드 카드)
+  ai-board task "할 일" [-p 이름]   보드 Backlog 에 할 일 카드 추가 (나중에 세션에서 "#번호 진행해줘")
+  ai-board setup <owner/repo> [--create] [--board 번호]
+                                  카드(이슈)를 모을 추적 레포와 보드 설정. 레포가 없으면 --create 로 비공개 생성
+  ai-board status                 설정·로그인·대기열·최근 오류 점검
+  ai-board flush                  대기열에 남은 보드 작업을 지금 보내기
 
-실시간 정보는 Claude Code 훅이 로컬(~/.ai-workflow)에 기록한다. GitHub 는 바뀐 내용이 있을 때만,
-프로젝트당 이슈 하나의 본문을 REST API 로 고친다 (새 🔴 판단 필요·🟢 완료가 생기면 코멘트로 알림).
+세션 카드는 claude-personal / claude-work 세션에서 훅이 자동으로 만들고 옮긴다:
+  작업 시작 → AI작업중 · 질문/권한 승인 → 판단필요 · 답변 끝 → 검토대기(+보고 코멘트) · 이슈 닫기 → 완료
 """
 import argparse
-import fcntl
-import hashlib
-import json
 import os
-import re
 import shutil
 import subprocess
 import sys
-import threading
 import time
-import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 import aiwf  # noqa: E402
-
-PORT = int(os.environ.get("AI_BOARD_PORT", "8765"))
-URL = f"http://localhost:{PORT}/"
-PIDFILE = aiwf.STATE / "server.pid"
-LOGFILE = aiwf.STATE / "server.log"
-DEBOUNCE = 60          # 같은 프로젝트를 GitHub 에 반영하는 최소 간격(초)
-STATUS_LABEL = "ai-status"
+import ghboard  # noqa: E402
+from ghboard import GitHubError  # noqa: E402
 
 
 def die(msg):
@@ -43,338 +31,21 @@ def die(msg):
     sys.exit(1)
 
 
-# ================================================================ 상태 모으기
-def collect_state():
-    projects = aiwf.load_json(aiwf.PROJECTS, {})
-    sync = aiwf.load_json(aiwf.SYNC, {})
-    t = aiwf.now()
-    by_path = {}
-    for s in aiwf.read_sessions():
-        live = aiwf.live_state(s)
-        age = t - s.get("last_activity", 0)
-        if (live == "ended" and age > 3 * 3600) or (live == "stale" and age > 24 * 3600):
-            continue
-        by_path.setdefault(s.get("path"), []).append({
-            "id": s.get("id"), "live": live, "mode": s.get("mode"), "request": s.get("request"),
-            "summary": s.get("summary"), "note": s.get("note"), "last_tool": s.get("last_tool"),
-            "files": len(s.get("files") or []), "commits": (s.get("commits") or [])[-3:],
-            "started": s.get("started"), "last_activity": s.get("last_activity"), "branch": s.get("branch"),
-        })
-    out = []
-    for path, p in projects.items():
-        st = aiwf.parse_status(aiwf.status_path(path))
-        ss = sorted(by_path.get(path, []), key=lambda x: x.get("last_activity") or 0, reverse=True)
-        if not st and not ss:
-            continue
-        out.append({"name": p.get("name") or Path(path).name, "path": path, "status": st, "sessions": ss,
-                    "issue": (sync.get(path) or {}).get("url")})
-    order = {"needs_you": 0, "working": 1, "replied": 2, "idle": 3, "stale": 4, "ended": 5}
-    out.sort(key=lambda p: (min([order.get(s["live"], 9) for s in p["sessions"]] or [9]),
-                            -len((p["status"] or {}).get("sections", {}).get("🔴", [])), p["name"]))
-    return {"now": t, "projects": out, "events": list(reversed(aiwf.read_events(80))),
-            "repo": aiwf.board_conf().get("BOARD_REPO", "")}
-
-
-# ================================================================ 터미널 보기
-LIVE_KO = {"working": "⚙ 작업 중", "needs_you": "🔔 나를 기다림", "replied": "✅ 답변 완료",
-           "idle": "· 대기", "stale": "⚠ 응답 없음", "ended": "■ 종료"}
-
-
-def ago(t):
-    d = int(aiwf.now() - (t or 0))
-    return f"{d}초 전" if d < 60 else f"{d // 60}분 전" if d < 3600 else f"{d // 3600}시간 전" if d < 86400 else f"{d // 86400}일 전"
-
-
-def cmd_list(_):
-    st = collect_state()
-    if not st["projects"]:
-        print("아직 기록된 프로젝트가 없습니다. 프로젝트 폴더에서 ai-init 후 claude-personal 로 시작하세요.")
-        return
-    for p in st["projects"]:
-        sec = (p["status"] or {}).get("sections") or {}
-        counts = "  ".join(f"{e} {len(sec.get(e, []))}" for e, _ in aiwf.SECTIONS)
-        print(f"■ {p['name']}  ({p['path']})   {counts}")
-        for s in p["sessions"]:
-            print(f"   {LIVE_KO.get(s['live'], s['live'])}  {ago(s['last_activity'])}  {aiwf.short(s['request'] or '(요청 전)', 70)}")
-            if s["live"] == "needs_you" and s.get("note"):
-                print(f"      └ {aiwf.short(s['note'], 90)}")
-            elif s["live"] == "replied" and s.get("summary"):
-                print(f"      └ {aiwf.short(s['summary'], 90)}")
-        for it in sec.get("🔴", [])[:5]:
-            print(f"   🔴 {aiwf.short(it['text'], 100)}")
-        print()
-
-
-# ================================================================ 할 일 추가
-def resolve_project(name=None):
-    if not name:
-        return aiwf.project_of(os.getcwd())
-    hit = [p for p in aiwf.load_json(aiwf.PROJECTS, {}).values() if p.get("name") == name]
-    if not hit:
-        die(f"프로젝트 '{name}' 를 모릅니다. 그 폴더에서 ai-init 하거나 claude-personal 을 한 번 실행하세요.")
-    return hit[0]["name"], hit[0]["path"]
-
-
-def cmd_task(a):
-    name, path = resolve_project(a.p)
-    if not aiwf.status_path(path).exists():
-        die(f"{path}/docs/STATUS.md 가 없습니다. 먼저: ai-init {path}")
-    text = " ".join(a.text)
-    aiwf.add_status_item(path, "⚪", text)
-    aiwf.register_project(name, path)
-    aiwf.append_event({"t": aiwf.now(), "project": name, "path": path, "event": "TaskAdded", "detail": text})
-    print(f"[{name}] ⚪ 예정에 추가함: {text}")
-    spawn_sync(path)
-
-
-# ================================================================ GitHub 동기화 (REST 만 사용)
-def gh_api(method, endpoint, payload=None, tries=4):
-    cmd = ["gh", "api", "--method", method, endpoint]
-    if payload is not None:
-        cmd += ["--input", "-"]
-    for i in range(tries):
-        r = subprocess.run(cmd, input=json.dumps(payload) if payload is not None else None,
-                           capture_output=True, text=True)
-        if r.returncode == 0:
-            return json.loads(r.stdout) if r.stdout.strip() else {}
-        if not re.search(r"rate limit|secondary|502|503|timeout", r.stderr, re.I) or i == tries - 1:
-            raise RuntimeError(r.stderr.strip()[:300])
-        time.sleep(30 * (i + 1))
-
-
-def item_key(text):
-    return re.sub(r"\W+", "", text)[:40]
-
-
-def render_body(name, raw):
-    lines = []
-    for line in raw.splitlines():
-        if line.startswith("# ") and not lines:
-            continue
-        if line.startswith(">") or line.strip().startswith("<!--"):
-            continue
-        lines.append(line)
-    head = (f"> 🤖 **ai-workflow 자동 현황** — 원본은 `{name}/docs/STATUS.md` 이고 이 본문은 자동으로 덮어써집니다.\n"
-            f"> 세션별 실시간 진행은 PC 에서 `ai-board` 대시보드로 봅니다. 동기화: {time.strftime('%Y-%m-%d %H:%M')}\n")
-    return head + "\n" + "\n".join(lines).strip() + "\n"
-
-
-def find_or_create_issue(repo, name):
-    title = f"[{name}] 현황"
-    for lab, color, desc in ((STATUS_LABEL, "0e8a16", "ai-workflow 프로젝트 현황"), (f"proj:{name}", "1d76db", f"프로젝트 {name}")):
-        try:
-            gh_api("POST", f"repos/{repo}/labels", {"name": lab, "color": color, "description": desc}, tries=1)
-        except RuntimeError:
-            pass    # 이미 있음
-    issues = gh_api("GET", f"repos/{repo}/issues?labels={STATUS_LABEL}&state=all&per_page=100")
-    for it in issues:
-        if it.get("title") == title:
-            if it.get("state") == "closed":
-                gh_api("PATCH", f"repos/{repo}/issues/{it['number']}", {"state": "open"})
-            return it["number"], it["html_url"]
-    it = gh_api("POST", f"repos/{repo}/issues", {"title": title, "body": "(동기화 준비 중)",
-                                                  "labels": [STATUS_LABEL, f"proj:{name}"]})
-    return it["number"], it["html_url"]
-
-
-def sync_one(path, force=False, bg=False):
-    repo = aiwf.board_conf().get("BOARD_REPO")
-    if not repo:
-        return "GitHub 추적 레포 미설정 (ai-board setup <owner/repo>)"
-    sp = aiwf.status_path(path)
-    if not sp.exists():
-        return "STATUS.md 없음"
-    aiwf.ensure_dirs()
-    lock = open(aiwf.STATE / f"sync-{hashlib.md5(path.encode()).hexdigest()[:10]}.lock", "w")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | (fcntl.LOCK_NB if bg else 0))
-    except BlockingIOError:
-        return "다른 동기화가 진행 중"   # 진행 중인 쪽이 끝나기 전에 최신 내용을 다시 확인한다
-    name = aiwf.project_of(path)[0]
-    msg = "변경 없음"
-    for _ in range(5):
-        rec = aiwf.load_json(aiwf.SYNC, {}).get(path) or {}
-        raw = sp.read_text(encoding="utf-8", errors="replace")
-        h = hashlib.sha256(raw.encode()).hexdigest()
-        if h == rec.get("hash") and not force:
-            break
-        wait = DEBOUNCE - (aiwf.now() - rec.get("t", 0))
-        if bg and wait > 0:
-            time.sleep(wait)     # 짧은 시간에 여러 번 바뀌면 마지막 내용만 한 번 올린다
-            continue
-        num, url = rec.get("issue"), rec.get("url")
-        if not num:
-            num, url = find_or_create_issue(repo, name)
-        gh_api("PATCH", f"repos/{repo}/issues/{num}", {"body": render_body(name, raw)})
-        st = aiwf.parse_status(sp)
-        reds = {item_key(i["text"]): i["text"] for i in st["sections"]["🔴"]}
-        greens = {item_key(i["text"]): i["text"] for i in st["sections"]["🟢"]}
-        if rec.get("hash"):    # 첫 동기화 때는 알림 코멘트를 남기지 않는다
-            new_r = [v for k, v in reds.items() if k not in rec.get("reds", [])]
-            new_g = [v for k, v in greens.items() if k not in rec.get("greens", [])]
-            parts = []
-            if new_r:
-                parts.append("### 🔴 판단이 필요합니다\n" + "\n".join(f"- {aiwf.short(x, 400)}" for x in new_r))
-            if new_g:
-                parts.append("### 🟢 완료 (검토 대기)\n" + "\n".join(f"- {aiwf.short(x, 400)}" for x in new_g))
-            if parts:
-                gh_api("POST", f"repos/{repo}/issues/{num}/comments", {"body": "\n\n".join(parts)})
-        allrec = aiwf.load_json(aiwf.SYNC, {})
-        allrec[path] = {"issue": num, "url": url, "hash": h, "t": aiwf.now(),
-                        "reds": list(reds), "greens": list(greens), "name": name}
-        aiwf.save_json(aiwf.SYNC, allrec)
-        msg = f"반영함 → {url}"
-        force = False
-    return msg
-
-
-def spawn_sync(path):
-    if aiwf.board_conf().get("BOARD_REPO"):
-        subprocess.Popen([sys.executable, __file__, "sync", "--path", path, "--bg"], start_new_session=True,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
-
-
-def cmd_sync(a):
-    if a.path:
-        paths = [aiwf.project_of(a.path)[1]]
-    elif a.p:
-        paths = [resolve_project(a.p)[1]]
-    elif a.all:
-        paths = [p for p in aiwf.load_json(aiwf.PROJECTS, {}) if aiwf.status_path(p).exists()]
-    else:
-        paths = [aiwf.project_of(os.getcwd())[1]]
-    for p in paths:
-        try:
-            r = sync_one(p, force=a.force, bg=a.bg)
-        except RuntimeError as e:
-            r = f"실패: {e}"
-            aiwf.append_event({"t": aiwf.now(), "path": p, "project": Path(p).name, "event": "SyncError", "detail": str(e)[:200]})
-        if not a.bg:
-            print(f"{Path(p).name}: {r}")
-
-
-# ================================================================ 설정
-def gh_ok():
+def need_gh():
     if not shutil.which("gh"):
         die("GitHub CLI(gh) 가 없습니다. ~/ai-workflow/install.sh --board 로 설치하세요.")
     if subprocess.run(["gh", "auth", "status"], capture_output=True).returncode != 0:
-        die("GitHub 로그인이 필요합니다: gh auth login")
+        die("GitHub 로그인이 필요합니다: gh auth login -s project")
 
 
-def cmd_setup(a):
-    gh_ok()
-    login = gh_api("GET", "user")["login"]          # GitHub 호출은 모두 REST (GraphQL 한도와 무관)
-    repo = a.repo if "/" in a.repo else f"{login}/{a.repo}"
-    owner, name = repo.split("/", 1)
-    try:
-        vis = "PRIVATE" if gh_api("GET", f"repos/{repo}", tries=1).get("private") else "PUBLIC"
-    except RuntimeError as e:
-        if "Not Found" not in str(e) and "404" not in str(e):
-            die(f"추적 레포를 확인하지 못했습니다: {e}")
-        if not a.create:
-            if sys.stdin.isatty() and input(f"  ? {repo} 가 없습니다. 비공개 레포로 만들까요? [y/N] ").lower().startswith("y"):
-                a.create = True
-            else:
-                die(f"추적 레포 {repo} 가 없습니다. 만들려면: ai-board setup {repo} --create")
-        body = {"name": name, "private": True, "auto_init": True, "description": "AI 작업 현황 (ai-workflow)"}
-        gh_api("POST", "user/repos" if owner == login else f"orgs/{owner}/repos", body)
-        vis = "PRIVATE"
-        print(f"추적 레포 생성: {repo} (비공개)")
-    else:
-        print(f"추적 레포: {repo} ({vis})")
-        if vis != "PRIVATE":
-            print("  ! 공개 레포입니다. 작업 내용이 공개되니 비공개 레포를 권합니다.")
-    aiwf.CONF.write_text(f"BOARD_REPO={repo}\n")
-    print(f"설정 저장: {aiwf.CONF}")
-    aiwf.scan_projects()
-    for p in aiwf.load_json(aiwf.PROJECTS, {}):
-        if aiwf.status_path(p).exists():
-            try:
-                print(f"  {Path(p).name}: {sync_one(p, force=True)}")
-            except RuntimeError as e:
-                print(f"  {Path(p).name}: 실패 {e}")
-    print(f"현황 이슈 목록: https://github.com/{repo}/issues?q=label%3A{STATUS_LABEL}")
+def need_board():
+    if not ghboard.configured():
+        die("보드가 설정되지 않았습니다. 먼저: ai-board setup <내계정>/work")
 
 
-def server_alive():
-    try:
-        with urllib.request.urlopen(URL + "api/ping", timeout=1) as r:
-            return r.status == 200
-    except OSError:
-        return False
-
-
-def cmd_status(_):
-    conf = aiwf.board_conf()
-    print(f"상태 저장소 : {aiwf.STATE}")
-    print(f"대시보드    : {'켜짐 ' + URL if server_alive() else '꺼짐 (ai-board 로 켜기)'}")
-    repo = conf.get("BOARD_REPO")
-    print(f"GitHub 현황 : {repo or '미설정 (선택) → ai-board setup <내계정>/work'}")
-    if repo:
-        if not shutil.which("gh"):
-            print("  ! GitHub CLI 없음")
-        elif subprocess.run(["gh", "auth", "status"], capture_output=True).returncode != 0:
-            print("  ! GitHub 로그인 안 됨 → gh auth login")
-        for p, r in aiwf.load_json(aiwf.SYNC, {}).items():
-            print(f"  {r.get('name', Path(p).name)}: #{r.get('issue')} 마지막 반영 {ago(r.get('t'))}")
-    for e in [e for e in aiwf.read_events(300) if e.get("event") in ("SyncError", "HookError")][-3:]:
-        print(f"  ! 최근 오류 {ago(e['t'])}: {e['event']} {aiwf.short(e.get('detail'), 120)}")
-
-
-# ================================================================ 대시보드 서버
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *a):
-        pass
-
-    def send(self, code, body, ctype="application/json; charset=utf-8"):
-        data = body if isinstance(body, bytes) else body.encode()
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def do_GET(self):
-        if self.path in ("/", "/index.html"):
-            self.send(200, (aiwf.ROOT / "web" / "dashboard.html").read_bytes(), "text/html; charset=utf-8")
-        elif self.path == "/api/ping":
-            self.send(200, "{}")
-        elif self.path.startswith("/api/state"):
-            self.send(200, json.dumps(collect_state(), ensure_ascii=False))
-        else:
-            self.send(404, "{}")
-
-    def do_POST(self):
-        origin = self.headers.get("Origin")
-        if origin not in (None, f"http://localhost:{PORT}", f"http://127.0.0.1:{PORT}"):
-            return self.send(403, "{}")     # 다른 사이트가 보내는 요청 차단
-        try:
-            data = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-        except ValueError:
-            return self.send(400, "{}")
-        if self.path == "/api/task":
-            path, text = data.get("path", ""), " ".join(str(data.get("text", "")).split())
-            known = aiwf.load_json(aiwf.PROJECTS, {})
-            if path not in known or not text or not aiwf.status_path(path).exists():
-                return self.send(400, json.dumps({"error": "프로젝트 또는 내용이 잘못됐습니다"}, ensure_ascii=False))
-            aiwf.add_status_item(path, "⚪", text)
-            aiwf.append_event({"t": aiwf.now(), "project": known[path]["name"], "path": path, "event": "TaskAdded", "detail": text})
-            spawn_sync(path)
-            return self.send(200, "{}")
-        self.send(404, "{}")
-
-
-def cmd_serve(_):
-    aiwf.ensure_dirs()
-    threading.Thread(target=aiwf.scan_projects, daemon=True).start()
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    PIDFILE.write_text(str(os.getpid()))
-    print(f"AI 작업 보드: {URL}", flush=True)
-    try:
-        srv.serve_forever()
-    finally:
-        PIDFILE.unlink(missing_ok=True)
+def ago(t):
+    d = int(time.time() - (t or 0))
+    return f"{d}초 전" if d < 60 else f"{d // 60}분 전" if d < 3600 else f"{d // 3600}시간 전" if d < 86400 else f"{d // 86400}일 전"
 
 
 def is_wsl():
@@ -386,58 +57,181 @@ def is_wsl():
 
 def open_browser(url):
     cands = [["wslview", url], ["cmd.exe", "/c", "start", "", url], ["explorer.exe", url]] if is_wsl() else []
-    cands += [["xdg-open", url], ["open", url]]
-    for cmd in cands:
+    for cmd in cands + [["xdg-open", url], ["open", url]]:
         if shutil.which(cmd[0]):
             subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd="/")
             return True
     return False
 
 
-def cmd_open(a):
-    if not server_alive():
-        aiwf.ensure_dirs()
-        with open(LOGFILE, "a") as log:
-            subprocess.Popen([sys.executable, __file__, "serve"], stdout=log, stderr=log, stdin=subprocess.DEVNULL,
-                             start_new_session=True)
-        for _ in range(50):
-            if server_alive():
-                break
-            time.sleep(0.1)
-        else:
-            die(f"대시보드 서버를 띄우지 못했습니다. 로그: {LOGFILE}")
-    print(f"AI 작업 보드: {URL}")
-    if not getattr(a, "no_browser", False) and not open_browser(URL):
-        print("브라우저를 자동으로 열지 못했습니다. 위 주소를 브라우저에 붙여 넣으세요.")
+# ---------------------------------------------------------------- 명령
+def cmd_open(_):
+    need_board()
+    url = ghboard.conf()["url"]
+    print(f"AI Board: {url}")
+    if not open_browser(url):
+        print("브라우저를 자동으로 열지 못했습니다. 위 주소를 여세요.")
 
 
-def cmd_stop(_):
+LIVE = {"working": "⚙ 작업 중", "needs_you": "🔔 확인 필요", "replied": "✅ 답변 완료", "idle": "· 대기", "stale": "⚠ 응답 없음"}
+
+
+def cmd_list(_):
+    sessions = [s for s in aiwf.read_sessions() if aiwf.live_state(s) in LIVE]
+    sessions.sort(key=lambda s: (s.get("project", ""), -(s.get("last_activity") or 0)))
+    print("■ 실행 중인 세션")
+    if not sessions:
+        print("   (없음)")
+    for s in sessions:
+        num = ghboard.card_of(s["id"]) if ghboard.configured() else None
+        print(f"   {LIVE[aiwf.live_state(s)]:<8} [{s.get('project')}] {aiwf.short(s.get('request') or '(요청 전)', 60)}"
+              f"  {('#' + str(num)) if num else ''}  {ago(s.get('last_activity'))}")
+        if s.get("note") and aiwf.live_state(s) == "needs_you":
+            print(f"            └ {aiwf.short(s['note'], 90)}")
+    if ghboard.configured():
+        cards = ghboard.cards()
+        for col in ghboard.COLUMNS[:-1]:
+            rows = sorted(((int(n), c) for n, c in cards.items() if c.get("status") == col), reverse=True)
+            if rows:
+                print(f"\n■ {col}")
+                for n, c in rows[:15]:
+                    print(f"   #{n:<4} {aiwf.short(c.get('title'), 90)}")
+        print(f"\n보드: {ghboard.conf()['url']}  (사람이 웹에서 옮기거나 닫은 카드는 여기 반영되지 않을 수 있음)")
+    left = ghboard.pending()
+    if left:
+        print(f"\n⏳ 아직 보내지 않은 보드 작업 {len(left)}건 (ai-board flush)")
+
+
+def cmd_task(a):
+    need_gh(); need_board()
+    if a.p:
+        name = a.p
+    else:
+        name = aiwf.project_of(os.getcwd())[0]
+    text = " ".join(a.text)
+    body = (f"> 🙋 사람이 등록한 할 일 · 프로젝트 **{name}**\n\n{text}\n\n---\n"
+            f"시작하려면 해당 프로젝트 폴더에서 `claude-personal` 을 켜고 `#번호 진행해줘` 처럼 요청하세요.")
     try:
-        os.kill(int(PIDFILE.read_text()), 15)
-        print("대시보드 서버를 껐습니다.")
-    except (OSError, ValueError):
-        print("켜진 서버가 없습니다.")
+        num = ghboard.create_card(name, aiwf.short(text, 70), body, status=a.status, sid="")
+    except GitHubError as e:
+        die(f"카드를 만들지 못했습니다: {e}")
+    print(f"#{num} [{name}] {text}  → {a.status}")
+
+
+def cmd_setup(a):
+    need_gh()
+    login = ghboard.rest("GET", "user")["login"]
+    repo = a.repo if "/" in a.repo else f"{login}/{a.repo}"
+    owner, rname = repo.split("/", 1)
+    # 1) 추적 레포: 모든 카드(이슈)가 모이는 곳
+    try:
+        private = ghboard.rest("GET", f"repos/{repo}").get("private")
+        print(f"추적 레포: {repo} ({'비공개' if private else '공개'})")
+        if not private:
+            print("  ! 공개 레포입니다. 작업 내용이 공개되니 비공개 레포를 권합니다.")
+    except GitHubError as e:
+        if "Not Found" not in str(e):
+            die(f"추적 레포를 확인하지 못했습니다: {e}")
+        if not a.create:
+            if sys.stdin.isatty() and input(f"  ? {repo} 가 없습니다. 비공개 레포로 만들까요? [y/N] ").lower().startswith("y"):
+                a.create = True
+            else:
+                die(f"추적 레포 {repo} 가 없습니다. 만들려면: ai-board setup {repo} --create")
+        ghboard.rest("POST", "user/repos" if owner == login else f"orgs/{owner}/repos",
+                     {"name": rname, "private": True, "auto_init": True, "description": "AI 작업 카드 (ai-workflow)"})
+        print(f"추적 레포 생성: {repo} (비공개)")
+    # 2) 보드: 번호를 주면 그 보드, 같은 레포로 설정된 보드가 있으면 재사용, 없으면 새로 만든다
+    old = ghboard.conf()
+    number, fresh = a.board, False
+    if not number and old.get("repo") == repo and old.get("owner") == owner:
+        number = old.get("number")
+    if not number:
+        r = subprocess.run(["gh", "project", "create", "--owner", owner, "--title", "AI Board", "--format", "json", "-q", ".number"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            die(f"보드를 만들지 못했습니다 (project 권한 필요: gh auth refresh -s project): {r.stderr.strip()}")
+        number, fresh = int(r.stdout.strip()), True
+        print(f"보드 생성: #{number}")
+    else:
+        print(f"보드 사용: #{number}")
+    p, fields = ghboard.load_board_ids(owner, int(number))
+    # 3) 컬럼: 새 보드면 워크플로우 컬럼으로 바꾼다. 기존 보드는 빠진 컬럼이 있을 때만 (--reset-columns)
+    st = fields.get("Status")
+    have = {o["name"] for o in (st or {}).get("options", [])}
+    missing = [c for c in ghboard.COLUMNS if c not in have]
+    if missing and (fresh or a.reset_columns):
+        opts = ",".join('{name:"%s",color:%s,description:"%s"}' % (c, *ghboard.COLUMN_DESC[c]) for c in ghboard.COLUMNS)
+        ghboard.graphql("mutation($f:ID!){updateProjectV2Field(input:{fieldId:$f,singleSelectOptions:[%s]}){projectV2Field{__typename}}}" % opts,
+                        f=st["id"])
+        print("컬럼 설정: " + " / ".join(ghboard.COLUMNS))
+    elif missing:
+        print(f"  ! 보드에 없는 컬럼: {', '.join(missing)} — 웹에서 Status 옵션에 추가하거나 --reset-columns (기존 카드의 컬럼 값이 지워짐)")
+    if "검토필요도" not in fields:
+        subprocess.run(["gh", "project", "field-create", str(number), "--owner", owner, "--name", "검토필요도",
+                        "--data-type", "SINGLE_SELECT", "--single-select-options", "낮음,중간,높음"], capture_output=True)
+        print("필드 추가: 검토필요도 (낮음/중간/높음)")
+    if subprocess.run(["gh", "project", "link", str(number), "--owner", owner, "--repo", repo], capture_output=True).returncode == 0:
+        print(f"보드를 {repo} 에 연결 (레포의 Projects 탭에 표시)")
+    data = ghboard.save_board(owner, int(number), repo)
+    print(f"\n보드 주소: {data['url']}")
+    print("웹에서 1회 (1분):")
+    print("  1. 보드 ⋯ → Workflows → 'Item closed' 켜고 Status 를 '완료' 로 → 이슈를 닫으면 카드가 완료로 이동")
+    print("  2. 보기(View) 레이아웃을 Board 로, 프로젝트별 탭은 필터에 label:proj:<이름> 을 넣고 Save")
+
+
+def cmd_status(_):
+    c = ghboard.conf()
+    print(f"기록 저장소 : {aiwf.STATE}")
+    if not shutil.which("gh"):
+        print("GitHub CLI  : 없음 → install.sh --board")
+    else:
+        ok = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
+        scopes = ok.stdout + ok.stderr
+        print(f"GitHub 로그인: {'됨' if ok.returncode == 0 else '안 됨 → gh auth login -s project'}"
+              f"{'' if 'project' in scopes or ok.returncode else ' (project 권한 없음 → gh auth refresh -s project)'}")
+    if c.get("url"):
+        print(f"보드        : {c['url']}  (추적 레포 {c['repo']})")
+        print(f"카드        : {len(ghboard.cards())}개 기록됨")
+    else:
+        print("보드        : 미설정 → ai-board setup <내계정>/work")
+    left = ghboard.pending()
+    print(f"대기열      : {len(left)}건{' (ai-board flush 로 지금 보내기)' if left else ''}")
+    for e in [e for e in aiwf.read_events(400) if e.get("event") in ("SyncError", "HookError")][-3:]:
+        print(f"  ! 최근 오류 {ago(e['t'])}: {e['event']} {aiwf.short(e.get('detail'), 140)}")
+
+
+def cmd_flush(_):
+    need_board()
+    n = len(ghboard.pending())
+    print(f"대기열 {n}건 처리 중…")
+    print(ghboard.worker(foreground=True))
+    left = ghboard.pending()
+    if left:
+        print(f"남은 작업 {len(left)}건: GitHub 한도·오류로 미뤄짐. ai-board status 로 오류를 확인하세요.")
 
 
 def main():
     ap = argparse.ArgumentParser(prog="ai-board", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd")
-    o = sub.add_parser("open"); o.add_argument("--no-browser", action="store_true")
-    for c in ("list", "status", "serve", "stop"):
+    for c in ("open", "list", "status", "flush", "worker"):
         sub.add_parser(c)
     t = sub.add_parser("task"); t.add_argument("text", nargs="+"); t.add_argument("-p")
+    t.add_argument("--status", default="Backlog", choices=ghboard.COLUMNS[:-1])
     s = sub.add_parser("setup"); s.add_argument("repo"); s.add_argument("--create", action="store_true")
-    y = sub.add_parser("sync")
-    y.add_argument("--all", action="store_true"); y.add_argument("-p"); y.add_argument("--path")
-    y.add_argument("--force", action="store_true"); y.add_argument("--bg", action="store_true")
+    s.add_argument("--board", type=int); s.add_argument("--reset-columns", action="store_true")
     r = sub.add_parser("register"); r.add_argument("path")
     a = ap.parse_args()
     if a.cmd == "register":
         aiwf.register_project(*aiwf.project_of(os.path.abspath(a.path)))
-        return
-    {"open": cmd_open, None: cmd_open, "list": cmd_list, "status": cmd_status, "serve": cmd_serve,
-     "stop": cmd_stop, "task": cmd_task, "setup": cmd_setup, "sync": cmd_sync}[a.cmd](a)
+    elif a.cmd == "worker":
+        ghboard.worker()
+    else:
+        {"open": cmd_open, None: cmd_open, "list": cmd_list, "status": cmd_status, "flush": cmd_flush,
+         "task": cmd_task, "setup": cmd_setup}[a.cmd](a)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except GitHubError as e:
+        die(f"GitHub 오류: {e}")

@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Claude Code 훅 처리기. claude-personal / claude-work / claude-lite 로 시작한 세션에만 런처가 붙인다.
 
-세션의 시작·요청·파일 수정·커밋·입력 대기·응답 완료·종료를 로컬 상태 저장소에 기록한다 (네트워크 호출 없음).
-- SessionStart  : 이 프로젝트의 STATUS 요약, 최근 세션, 동시에 실행 중인 세션을 Claude 에게 알려 준다
-- Stop          : 파일을 바꿨는데 STATUS.md 를 갱신하지 않았으면 한 번 되돌려 갱신하게 한다 (personal/work)
-- Stop·SessionEnd: GitHub 현황 이슈 동기화를 백그라운드로 요청한다 (설정된 경우)
-훅이 실패해도 Claude 작업은 막지 않는다 (항상 0 으로 끝남, Stop 되돌리기만 예외).
+하는 일
+- 세션 활동(요청, 파일 수정, 커밋, 질문, 답변 완료, 종료)을 ~/.ai-workflow 에 기록한다
+- GitHub Projects 보드 작업을 대기열에 넣고 전송기를 깨운다 (보드가 설정된 personal/work 세션)
+    작업 시작 → 카드 생성·AI작업중 / 질문·권한 승인 → 판단필요 / 답변 끝 → 검토대기 + 보고 코멘트
+    카드는 파일 수정·커밋·질문·1분 넘는 작업이 있을 때만 만든다 (간단한 질문 세션은 보드에 안 올림)
+- SessionStart: 이 프로젝트의 STATUS 요약, 열린 카드, 최근 세션, 동시에 실행 중인 세션을 Claude 에게 알려 준다
+- Stop: 파일을 바꿨는데 STATUS.md 를 갱신하지 않았으면 한 번 되돌려 갱신하게 한다 (personal/work)
+훅이 실패해도 Claude 작업은 막지 않는다.
 """
 import json
 import os
@@ -17,8 +20,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 import aiwf  # noqa: E402
+import ghboard  # noqa: E402
 
 MODE = os.environ.get("AI_WORKFLOW_MODE", "personal")
+EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 
 
 def git(path, *args):
@@ -36,6 +41,21 @@ def rel(path, root):
         return path
 
 
+def hm(t):
+    return time.strftime("%m-%d %H:%M", time.localtime(t or 0))
+
+
+def looks_question(msg):
+    """답변이 사용자에게 결정을 묻고 끝나는지 (마지막 줄이 질문)."""
+    lines = [re.sub(r"[*_`>#\s]+$|^[*_`>#\-\s]+", "", l) for l in (msg or "").strip().splitlines() if l.strip()]
+    return bool(lines) and (lines[-1].endswith("?") or lines[-1].endswith("까요") or lines[-1].endswith("까요."))
+
+
+def review_level(msg):
+    m = re.findall(r"검토\s*필요도[^가-힣]{0,6}(낮음|중간|높음)", msg or "")
+    return m[-1] if m else None
+
+
 def brief(s, name, path):
     """세션 시작 때 Claude 에게 넣어 줄 요약."""
     out = [f"[ai-workflow] 프로젝트 '{name}' 의 지금까지 상황 (자동 생성 요약, 원본은 docs/STATUS.md)"]
@@ -47,39 +67,29 @@ def brief(s, name, path):
             if e == "🟢" or not items:
                 continue
             out.append(f"{e} {label} ({len(items)})")
-            for it in items[:8]:
-                out.append(f"  - {aiwf.short(it['text'], 180)}")
+            out += [f"  - {aiwf.short(it['text'], 180)}" for it in items[:8]]
             if len(items) > 8:
                 out.append(f"  - … 외 {len(items) - 8}개 (STATUS.md 참고)")
     else:
         out.append("docs/STATUS.md 없음 (ai-init 으로 만들 수 있다)")
-    others = [x for x in aiwf.read_sessions()
-              if x.get("path") == path and x.get("id") != s["id"]]
-    live = [x for x in others if aiwf.live_state(x) in ("working", "needs_you", "replied", "idle")]
+    if ghboard.configured():
+        mine = sorted(((int(n), c) for n, c in ghboard.cards().items()
+                       if c.get("project") == name and c.get("status") not in ("완료", None)), reverse=True)[:10]
+        if mine:
+            out.append("보드의 이 프로젝트 카드 (최근, 사람이 이미 닫았을 수 있음):")
+            out += [f"  - #{n} [{c.get('status')}] {aiwf.short(c.get('title'), 100)}" for n, c in mine]
+    others = [x for x in aiwf.read_sessions() if x.get("path") == path and x.get("id") != s["id"]]
+    live = [x for x in others if aiwf.live_state(x) in ("working", "needs_you")]
     if live:
-        out.append(f"⚠ 같은 프로젝트에서 지금 실행 중인 다른 세션 {len(live)}개 — 같은 파일을 동시에 고치지 않게 주의하고, 겹치면 사용자에게 알린다:")
-        for x in live:
-            out.append(f"  - [{aiwf.live_state(x)}] {aiwf.short(x.get('request') or '(요청 전)', 120)}")
+        out.append(f"⚠ 같은 프로젝트에서 지금 작업 중인 다른 세션 {len(live)}개 — 같은 파일을 동시에 고치지 않게 주의하고, 겹치면 사용자에게 알린다:")
+        out += [f"  - [{aiwf.live_state(x)}] {aiwf.short(x.get('request') or '(요청 전)', 120)}" for x in live]
     done = sorted([x for x in others if x not in live and x.get("request")],
                   key=lambda x: x.get("last_activity", 0), reverse=True)[:3]
     if done:
         out.append("최근 세션:")
-        for x in done:
-            t = x.get("last_activity", 0)
-            out.append(f"  - {time.strftime('%m-%d %H:%M', time.localtime(t))} 요청: {aiwf.short(x.get('request'), 100)}"
-                       f" → {aiwf.short(x.get('summary') or '(요약 없음)', 160)}")
+        out += [f"  - {hm(x.get('last_activity'))} 요청: {aiwf.short(x.get('request'), 100)} → "
+                f"{aiwf.short(x.get('summary') or '(요약 없음)', 160)}" for x in done]
     return "\n".join(out)
-
-
-def trigger_sync(path):
-    if not aiwf.board_conf().get("BOARD_REPO"):
-        return
-    try:
-        subprocess.Popen([str(aiwf.ROOT / "bin" / "ai-board"), "sync", "--path", path, "--bg"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                         start_new_session=True)
-    except OSError:
-        pass
 
 
 def main():
@@ -95,12 +105,14 @@ def main():
     s = aiwf.load_json(f, None)
     if not s:
         name, path = aiwf.project_of(cwd)
-        s = {"id": sid, "project": name, "path": path, "mode": MODE, "started": aiwf.now(),
-             "state": "idle", "request": "", "requests": [], "files": [], "commits": [],
-             "tools": 0, "last_tool": "", "summary": "", "note": "", "branch": ""}
+        s = {"id": sid, "project": name, "path": path, "mode": MODE, "started": aiwf.now(), "state": "idle",
+             "request": "", "requests": [], "files": [], "commits": [], "tools": 0, "last_tool": "",
+             "summary": "", "note": "", "branch": ""}
     name, path = s["project"], s["path"]
-    detail = ""
-    out = None
+    board = MODE != "lite" and ghboard.configured()
+    card = ghboard.card_of(sid) if board else None
+    ops = None          # 보드 대기열에 넣을 작업
+    detail, out = "", None
 
     if event == "SessionStart":
         aiwf.register_project(name, path)
@@ -108,18 +120,35 @@ def main():
         s["branch"] = git(path, "branch", "--show-current")
         detail = data.get("source", "")
         out = brief(s, name, path)
+
     elif event == "UserPromptSubmit":
         prompt = (data.get("prompt") or "").strip()
         if prompt and not prompt.startswith("/"):
             s["request"] = aiwf.short(prompt, 400)
-            s["requests"] = (s.get("requests") or [])[-19:] + [{"t": aiwf.now(), "text": aiwf.short(prompt, 400)}]
-        s.update(state="working", turn_started=aiwf.now(), turn_files=[], note="", summary="")
+            s["requests"] = (s.get("requests") or [])[-29:] + [{"t": aiwf.now(), "text": aiwf.short(prompt, 400)}]
+        s.update(state="working", turn_started=aiwf.now(), turn_files=[], turn_commits=0, note="")
         detail = aiwf.short(prompt, 200)
+        # "#12 진행해줘", "카드 #12" 처럼 보드에 미리 만든 카드를 지정하면 그 카드로 연결
+        m = re.match(r"^\s*#(\d{1,6})\b", prompt) or re.search(r"카드\s*#(\d{1,6})", prompt)
+        if board and (card or m):
+            ops = {"bind": int(m.group(1)) if m and not card else None, "status": "AI작업중", "body": True}
+
+    elif event == "PreToolUse" and data.get("tool_name") == "AskUserQuestion":
+        qs = (data.get("tool_input") or {}).get("questions") or []
+        text = "\n".join(f"- {q.get('question', '')}" + "".join(f"\n  - {o.get('label', '')}: {o.get('description', '')}"
+                                                                 for o in q.get("options", [])) for q in qs)
+        s["state"], s["note"] = "needs_you", aiwf.short(" / ".join(q.get("question", "") for q in qs), 200)
+        detail = s["note"]
+        event = "Question"
+        if board:
+            ops = {"create": True, "status": "판단필요", "body": True,
+                   "comments": [f"### ❓ 확인이 필요합니다\n\n{aiwf.short_lines(text, 3000)}"]}
+
     elif event == "PostToolUse":
         tool, ti = data.get("tool_name", ""), data.get("tool_input") or {}
         s["state"] = "working"
         s["tools"] = s.get("tools", 0) + 1
-        if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+        if tool in EDIT_TOOLS:
             fp = rel(ti.get("file_path") or ti.get("notebook_path") or "", path)
             s["last_tool"] = f"수정 {fp}"
             for key in ("files", "turn_files"):
@@ -128,6 +157,8 @@ def main():
                     lst.append(fp)
                 s[key] = lst[-200:]
             detail = s["last_tool"]
+            if board and not fp.endswith("docs/STATUS.md"):
+                ops = {"body": True} if card else {"create": True, "status": "AI작업중", "body": True}
         elif tool == "Bash":
             cmd = ti.get("command", "")
             s["last_tool"] = "실행 " + aiwf.short(cmd, 80)
@@ -135,44 +166,68 @@ def main():
                 c = git(path, "log", "-1", "--format=%h %s")
                 if c and c not in (s.get("commits") or []):
                     s["commits"] = (s.get("commits") or [])[-49:] + [c]
-                    detail = "커밋 " + c
-                    event = "Commit"
-        if not detail:
+                    s["turn_commits"] = s.get("turn_commits", 0) + 1
+                    detail, event = "커밋 " + c, "Commit"
+                    if board:
+                        ops = {"body": True} if card else {"create": True, "status": "AI작업중", "body": True}
+        elif tool == "AskUserQuestion":
+            s["note"] = ""
+            if board and card:
+                ops = {"status": "AI작업중"}
+        if not detail and not ops:
             aiwf.save_json(f, {**s, "last_activity": aiwf.now()})
-            return 0    # 일반 도구 실행은 이벤트 기록을 남기지 않는다 (활동 시각만 갱신)
+            return 0    # 일반 도구 실행은 활동 시각만 갱신
+
     elif event == "Notification":
-        s["state"] = "needs_you"
-        s["note"] = aiwf.short(data.get("message", ""), 200)
-        detail = s["note"]
+        msg = data.get("message", "")
+        if re.search(r"permission|권한|승인", msg, re.I):   # 권한 승인 대기만 '판단필요'로 (단순 입력 대기는 무시)
+            s["state"], s["note"] = "needs_you", aiwf.short(msg, 200)
+            detail = s["note"]
+            if board:
+                ops = {"create": True, "status": "판단필요"}
+        else:
+            aiwf.save_json(f, s)
+            return 0
+
     elif event == "Stop":
         msg = data.get("last_assistant_message") or ""
-        s["summary"] = aiwf.short(msg, 600)
-        # 정확성 장치: 파일을 바꿨는데 STATUS.md 를 갱신하지 않았으면 한 번 되돌려 갱신하게 한다
+        s["summary"] = aiwf.short_lines(msg, 3000)
         changed = [x for x in (s.get("turn_files") or []) if not x.endswith("docs/STATUS.md")]
         sp = aiwf.status_path(path)
+        # 정확성 장치: 파일을 바꿨는데 STATUS.md 를 갱신하지 않았으면 한 번 되돌려 갱신하게 한다
         if (MODE in ("personal", "work") and changed and sp.exists() and not data.get("stop_hook_active")
                 and sp.stat().st_mtime < s.get("turn_started", 0)):
-            s["state"] = "working"
             aiwf.save_json(f, {**s, "last_activity": aiwf.now()})
             print(json.dumps({"decision": "block", "reason":
                               "이번 요청에서 파일을 바꿨는데 docs/STATUS.md 가 갱신되지 않았습니다. "
                               "규칙대로 STATUS.md 를 갱신(진행 중/완료/판단 필요/다음 예정, 최종 갱신 시각)한 뒤 마무리하세요."},
                              ensure_ascii=False))
             return 0
-        s["state"] = "replied"
+        q = looks_question(msg)
+        s["state"] = "needs_you" if q else "replied"
+        s["note"] = aiwf.short(msg.strip().splitlines()[-1], 200) if q and msg.strip() else ""
         detail = aiwf.short(msg, 200)
-        if MODE != "lite":
-            trigger_sync(path)
+        worked = bool(changed or s.get("turn_commits"))
+        long_turn = aiwf.now() - s.get("turn_started", aiwf.now()) > 60
+        if board and (card or worked or long_turn):
+            head = "### ❓ 확인이 필요합니다" if q else "### ✅ 작업 보고"
+            ops = {"create": True, "status": "판단필요" if q else "검토대기", "review": review_level(msg),
+                   "body": True, "final": True,
+                   "comments": [f"{head}\n\n{aiwf.short_lines(msg, 4000)}"] if (worked or q) else []}
+
     elif event == "SessionEnd":
         s["state"] = "ended"
         detail = data.get("reason", "")
-        if MODE != "lite":
-            trigger_sync(path)
+        if board and card:
+            ops = {"body": True, "final": True}
 
     s["last_activity"] = aiwf.now()
     aiwf.save_json(f, s)
-    aiwf.append_event({"t": s["last_activity"], "sid": sid, "project": name, "path": path,
-                       "event": event, "detail": detail})
+    aiwf.append_event({"t": s["last_activity"], "sid": sid, "project": name, "path": path, "event": event, "detail": detail})
+    if ops:
+        first = (s.get("requests") or [{}])[0].get("text") or s.get("request")
+        ghboard.enqueue(sid, title=first, **ops)
+        ghboard.spawn_worker()
     if out:
         print(out)
     return 0

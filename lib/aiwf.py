@@ -4,7 +4,7 @@
   sessions/<세션ID>.json   세션별 현재 상태 (훅이 갱신, 대시보드가 읽음)
   events.jsonl             모든 세션의 활동 기록 (한 줄 = 한 이벤트)
   projects.json            알려진 프로젝트 목록 {경로: {name, path, seen}}
-  sync.json                GitHub 현황 이슈 동기화 기록
+  board.json · cards.json · queue/   GitHub 보드 설정, 카드 기록, 보낼 작업 (lib/ghboard.py)
 """
 import json
 import os
@@ -19,12 +19,8 @@ STATE = Path(os.environ.get("AI_WORKFLOW_STATE") or Path.home() / ".ai-workflow"
 SESSIONS = STATE / "sessions"
 EVENTS = STATE / "events.jsonl"
 PROJECTS = STATE / "projects.json"
-SYNC = STATE / "sync.json"
-CONF = Path(os.environ.get("AI_WORKFLOW_CONF") or ROOT / ".board")
 
 SECTIONS = [("🔴", "판단 필요"), ("🟡", "진행 중"), ("🟢", "완료 · 검토 대기"), ("⚪", "예정")]
-SKIP_DIRS = {"node_modules", ".git", ".cache", ".nvm", ".local", ".npm", ".gradle", ".m2",
-             "__pycache__", "build", "dist", "target", ".venv", "venv", "backups"}
 
 
 def now() -> float:
@@ -104,26 +100,6 @@ def register_project(name: str, path: str):
     save_json(PROJECTS, projects)
 
 
-def scan_projects(root: Path = Path.home(), depth: int = 4):
-    """~ 아래에서 docs/STATUS.md 를 가진 프로젝트를 찾아 등록한다."""
-    base = len(root.parts)
-    found = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
-        if len(Path(dirpath).parts) - base >= depth:
-            dirnames[:] = []
-        if Path(dirpath).name == "docs" and "STATUS.md" in filenames:
-            proj = str(Path(dirpath).parent)
-            found.append(proj)
-    projects = load_json(PROJECTS, {})
-    for proj in found:
-        if proj not in projects:
-            name, path = project_of(proj)
-            projects[path] = {"name": name, "path": path, "seen": 0}
-    save_json(PROJECTS, projects)
-    return projects
-
-
 def status_path(project_path: str) -> Path:
     return Path(project_path) / "docs" / "STATUS.md"
 
@@ -156,26 +132,6 @@ def parse_status(path: Path):
     return {"updated": m.group(1).strip() if m else None, "sections": sections, "mtime": path.stat().st_mtime}
 
 
-def add_status_item(project_path: str, section: str, text: str):
-    """STATUS.md 의 해당 절 끝에 항목을 넣는다. '(없음)' 자리표시는 지운다."""
-    path = status_path(project_path)
-    lines = path.read_text(encoding="utf-8").splitlines()
-    start = next((i for i, l in enumerate(lines) if re.match(r"^##\s+" + re.escape(section), l)), None)
-    if start is None:
-        lines += ["", f"## {section}", f"- {text}"]
-    else:
-        end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
-        body = [i for i in range(start + 1, end) if lines[i].strip() == "- (없음)"]
-        for i in reversed(body):
-            del lines[i]
-            end -= 1
-        last = max((i for i in range(start + 1, end) if lines[i].strip()), default=start)
-        lines.insert(last + 1, f"- {text}")
-    stamp = time.strftime("%Y-%m-%d %H:%M")
-    lines = [re.sub(r"^최종 갱신:.*$", f"최종 갱신: {stamp}", l) for l in lines]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
 # ---------------------------------------------------------------- 세션
 def session_file(sid: str) -> Path:
     return SESSIONS / f"{sid}.json"
@@ -204,16 +160,10 @@ def live_state(s: dict) -> str:
     return st
 
 
-def board_conf():
-    conf = {}
-    try:
-        for line in CONF.read_text().splitlines():
-            if "=" in line:
-                k, v = line.split("=", 1)
-                conf[k.strip()] = v.strip()
-    except OSError:
-        pass
-    return conf
+def short_lines(text: str, n: int) -> str:
+    """줄바꿈은 살리고 길이만 자른다."""
+    text = (text or "").strip()
+    return text if len(text) <= n else text[: n - 1] + "…"
 
 
 def short(text: str, n: int) -> str:
