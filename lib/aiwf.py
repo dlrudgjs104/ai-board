@@ -86,10 +86,28 @@ def git_root(cwd: str) -> str:
     return cwd
 
 
+def is_repo(path: str) -> bool:
+    return git_root(path) != path or (Path(path) / ".git").exists()
+
+
 def project_of(cwd: str):
     """작업 폴더 → (프로젝트 이름, 프로젝트 경로). 이름은 git 레포 폴더 이름, AI_PROJECT 로 바꿀 수 있다."""
     path = git_root(cwd)
     return os.environ.get("AI_PROJECT") or Path(path).name, path
+
+
+def project_in_text(text: str):
+    """요청 글에 알려진 프로젝트 이름이 있으면 (이름, 경로). 여러 개면 가장 먼저 나온 것."""
+    low = text.lower()
+    best = None
+    for p in load_json(PROJECTS, {}).values():
+        n = (p.get("name") or "").lower()
+        if len(n) < 3 or not is_repo(p["path"]):
+            continue
+        m = re.search(r"(?<![a-z0-9_-])" + re.escape(n) + r"(?![a-z0-9_-])", low)   # 뒤에 붙는 조사(랑, 에서)는 허용
+        if m and (best is None or m.start() < best[0]):
+            best = (m.start(), p["name"], p["path"])
+    return (best[1], best[2]) if best else None
 
 
 def register_project(name: str, path: str):

@@ -258,8 +258,21 @@ def enqueue(sid, **ops):
         # 상태 변경·코멘트·카드 생성은 미뤄 둔 본문 수정을 기다리지 않고 바로 보낸다
         if any(ops.get(k) for k in ("status", "review", "create", "bind", "comments", "final")):
             q.pop("not_before", None)
+            if not ops.get("tentative"):
+                q.pop("tentative", None)
+        if ops.get("delay"):        # 잠정 카드: 이 시간 뒤에도 작업 중이면 만든다 (그 전에 끝나면 cancel)
+            q["not_before"] = time.time() + q.pop("delay")
         q["t"] = time.time()
         aiwf.save_json(_qfile(sid), q)
+
+
+def cancel_tentative(sid):
+    """아직 보내지 않은 잠정 카드 생성을 취소한다 (짧은 질문으로 끝난 경우)."""
+    with open(QLOCK, "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        q = aiwf.load_json(_qfile(sid), None)
+        if q and q.get("tentative"):
+            _qfile(sid).unlink(missing_ok=True)
 
 
 def _take(path):

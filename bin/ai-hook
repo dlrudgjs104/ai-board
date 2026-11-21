@@ -123,15 +123,30 @@ def main():
 
     elif event == "UserPromptSubmit":
         prompt = (data.get("prompt") or "").strip()
-        if prompt and not prompt.startswith("/"):
+        slash = bool(re.match(r"^/[A-Za-z][\w:-]*(\s|$)", prompt))     # /compact 같은 명령 (경로 /tmp/... 는 아님)
+        if prompt and not slash:
             s["request"] = aiwf.short(prompt, 400)
             s["requests"] = (s.get("requests") or [])[-29:] + [{"t": aiwf.now(), "text": aiwf.short(prompt, 400)}]
         s.update(state="working", turn_started=aiwf.now(), turn_files=[], turn_commits=0, note="")
         detail = aiwf.short(prompt, 200)
+        notes = []
+        if not aiwf.is_repo(path) and not card and prompt:
+            # 홈처럼 레포가 아닌 곳에서 시작한 세션: 요청에 적힌 프로젝트 이름으로 기록한다 ("coinsensor 프로젝트에서 …")
+            hit = aiwf.project_in_text(prompt)
+            if hit:
+                s["project"], s["path"] = name, path = hit
+                s["branch"] = git(path, "branch", "--show-current")
+                notes.append(f"[ai-workflow] 이 세션은 프로젝트 '{name}' ({path}) 작업으로 기록된다. 작업은 이 경로에서 한다.")
         # "#12 진행해줘", "카드 #12" 처럼 보드에 미리 만든 카드를 지정하면 그 카드로 연결
         m = re.match(r"^\s*#(\d{1,6})\b", prompt) or re.search(r"카드\s*#(\d{1,6})", prompt)
         if board and (card or m):
             ops = {"bind": int(m.group(1)) if m and not card else None, "status": "AI작업중", "body": True}
+        elif board and aiwf.is_repo(path) and prompt and not slash:
+            # 20초 뒤에도 작업 중이면 카드를 만든다. 그 전에 답이 끝나면 취소 (간단한 질문은 보드에 안 올림)
+            ops = {"create": True, "status": "AI작업중", "body": True, "tentative": True, "delay": 20}
+        if board and card:
+            notes.append(f"[ai-workflow] 이 세션의 보드 카드: #{card}. 사용자가 확인 완료·완료 처리를 요청하면 `ai-board close {card}` 를 실행한다.")
+        out = "\n".join(notes) or None
 
     elif event == "PreToolUse" and data.get("tool_name") == "AskUserQuestion":
         qs = (data.get("tool_input") or {}).get("questions") or []
@@ -149,7 +164,14 @@ def main():
         s["state"] = "working"
         s["tools"] = s.get("tools", 0) + 1
         if tool in EDIT_TOOLS:
-            fp = rel(ti.get("file_path") or ti.get("notebook_path") or "", path)
+            raw = ti.get("file_path") or ti.get("notebook_path") or ""
+            if raw and not aiwf.is_repo(path) and not card:
+                # 홈 폴더처럼 레포가 아닌 곳에서 시작한 세션: 처음 고친 파일의 레포를 프로젝트로 삼는다
+                fname, fpath = aiwf.project_of(str(Path(raw).parent))
+                if aiwf.is_repo(fpath):
+                    s["project"], s["path"] = name, path = fname, fpath
+                    aiwf.register_project(name, path)
+            fp = rel(raw, path)
             s["last_tool"] = f"수정 {fp}"
             for key in ("files", "turn_files"):
                 lst = s.get(key) or []
@@ -208,7 +230,10 @@ def main():
         s["note"] = aiwf.short(msg.strip().splitlines()[-1], 200) if q and msg.strip() else ""
         detail = aiwf.short(msg, 200)
         worked = bool(changed or s.get("turn_commits"))
-        long_turn = aiwf.now() - s.get("turn_started", aiwf.now()) > 60
+        # 레포가 아닌 폴더(홈 등)에서 시작해 아직 고친 파일이 없으면 프로젝트를 알 수 없으므로 카드를 만들지 않는다
+        long_turn = aiwf.now() - s.get("turn_started", aiwf.now()) > 60 and aiwf.is_repo(path)
+        if board and not (card or worked or long_turn):
+            ghboard.cancel_tentative(sid)
         if board and (card or worked or long_turn):
             head = "### ❓ 확인이 필요합니다" if q else "### ✅ 작업 보고"
             ops = {"create": True, "status": "판단필요" if q else "검토대기", "review": review_level(msg),

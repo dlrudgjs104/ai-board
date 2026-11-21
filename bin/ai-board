@@ -7,6 +7,7 @@
   ai-board setup <owner/repo> [--create] [--board 번호]
                                   카드(이슈)를 모을 추적 레포와 보드 설정. 레포가 없으면 --create 로 비공개 생성
   ai-board status                 설정·로그인·대기열·최근 오류 점검
+  ai-board close <번호> [메모]      확인 끝: 카드를 완료로 옮기고 이슈 닫기
   ai-board flush                  대기열에 남은 보드 작업을 지금 보내기
 
 세션 카드는 claude-personal / claude-work 세션에서 훅이 자동으로 만들고 옮긴다:
@@ -200,6 +201,22 @@ def cmd_status(_):
         print(f"  ! 최근 오류 {ago(e['t'])}: {e['event']} {aiwf.short(e.get('detail'), 140)}")
 
 
+def cmd_close(a):
+    need_gh(); need_board()
+    num = int(str(a.num).lstrip("#"))
+    c = ghboard.conf()
+    try:
+        if str(num) not in ghboard.cards():
+            ghboard.bind_card(num, "", aiwf.project_of(os.getcwd())[0])
+        ghboard.set_status(num, "완료")
+        if a.memo:
+            ghboard.comment(num, " ".join(a.memo))
+        ghboard.rest("PATCH", f"repos/{c['repo']}/issues/{num}", {"state": "closed", "state_reason": "completed"})
+    except GitHubError as e:
+        die(f"닫지 못했습니다: {e}")
+    print(f"#{num} → 완료, 이슈 닫음")
+
+
 def cmd_flush(_):
     need_board()
     n = len(ghboard.pending())
@@ -220,6 +237,7 @@ def main():
     s = sub.add_parser("setup"); s.add_argument("repo"); s.add_argument("--create", action="store_true")
     s.add_argument("--board", type=int); s.add_argument("--reset-columns", action="store_true")
     r = sub.add_parser("register"); r.add_argument("path")
+    cl = sub.add_parser("close"); cl.add_argument("num"); cl.add_argument("memo", nargs="*")
     a = ap.parse_args()
     if a.cmd == "register":
         aiwf.register_project(*aiwf.project_of(os.path.abspath(a.path)))
@@ -227,7 +245,7 @@ def main():
         ghboard.worker()
     else:
         {"open": cmd_open, None: cmd_open, "list": cmd_list, "status": cmd_status, "flush": cmd_flush,
-         "task": cmd_task, "setup": cmd_setup}[a.cmd](a)
+         "task": cmd_task, "setup": cmd_setup, "close": cmd_close}[a.cmd](a)
 
 
 if __name__ == "__main__":
