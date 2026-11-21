@@ -28,4 +28,9 @@ if [[ $dry == 0 && -f "$target/docs/STATUS.md" ]]; then
   # 새로 만든 템플릿의 날짜 자리표시자만 채운다 (이미 채워진 파일은 건드리지 않음)
   sed -i "s/^최종 갱신: YYYY-MM-DD HH:MM/최종 갱신: $(date '+%Y-%m-%d %H:%M')/" "$target/docs/STATUS.md"
 fi
-echo "완료. ai-status 가 이 프로젝트를 찾으려면 $target 이 ~ 아래 4단계 이내여야 합니다."
+if [[ $dry == 1 ]]; then
+  echo "미리 보기만 했습니다. 실제로 만들려면 -n 없이 다시 실행하세요."
+else
+  "$ROOT/bin/ai-board" register "$target" 2>/dev/null || true
+  echo "완료. 이제 이 폴더에서 claude-personal 로 시작하면 ai-board 보드에 나타납니다."
+fi

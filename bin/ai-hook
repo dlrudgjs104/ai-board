@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""Claude Code 훅 처리기. claude-personal / claude-work / claude-lite 로 시작한 세션에만 런처가 붙인다.
+
+세션의 시작·요청·파일 수정·커밋·입력 대기·응답 완료·종료를 로컬 상태 저장소에 기록한다 (네트워크 호출 없음).
+- SessionStart  : 이 프로젝트의 STATUS 요약, 최근 세션, 동시에 실행 중인 세션을 Claude 에게 알려 준다
+- Stop          : 파일을 바꿨는데 STATUS.md 를 갱신하지 않았으면 한 번 되돌려 갱신하게 한다 (personal/work)
+- Stop·SessionEnd: GitHub 현황 이슈 동기화를 백그라운드로 요청한다 (설정된 경우)
+훅이 실패해도 Claude 작업은 막지 않는다 (항상 0 으로 끝남, Stop 되돌리기만 예외).
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import aiwf  # noqa: E402
+
+MODE = os.environ.get("AI_WORKFLOW_MODE", "personal")
+
+
+def git(path, *args):
+    try:
+        r = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True, timeout=3)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def rel(path, root):
+    try:
+        return str(Path(path).resolve().relative_to(root))
+    except (ValueError, OSError):
+        return path
+
+
+def brief(s, name, path):
+    """세션 시작 때 Claude 에게 넣어 줄 요약."""
+    out = [f"[ai-workflow] 프로젝트 '{name}' 의 지금까지 상황 (자동 생성 요약, 원본은 docs/STATUS.md)"]
+    st = aiwf.parse_status(aiwf.status_path(path))
+    if st:
+        out.append(f"STATUS 최종 갱신: {st['updated'] or '알 수 없음'}")
+        for e, label in aiwf.SECTIONS:
+            items = st["sections"][e]
+            if e == "🟢" or not items:
+                continue
+            out.append(f"{e} {label} ({len(items)})")
+            for it in items[:8]:
+                out.append(f"  - {aiwf.short(it['text'], 180)}")
+            if len(items) > 8:
+                out.append(f"  - … 외 {len(items) - 8}개 (STATUS.md 참고)")
+    else:
+        out.append("docs/STATUS.md 없음 (ai-init 으로 만들 수 있다)")
+    others = [x for x in aiwf.read_sessions()
+              if x.get("path") == path and x.get("id") != s["id"]]
+    live = [x for x in others if aiwf.live_state(x) in ("working", "needs_you", "replied", "idle")]
+    if live:
+        out.append(f"⚠ 같은 프로젝트에서 지금 실행 중인 다른 세션 {len(live)}개 — 같은 파일을 동시에 고치지 않게 주의하고, 겹치면 사용자에게 알린다:")
+        for x in live:
+            out.append(f"  - [{aiwf.live_state(x)}] {aiwf.short(x.get('request') or '(요청 전)', 120)}")
+    done = sorted([x for x in others if x not in live and x.get("request")],
+                  key=lambda x: x.get("last_activity", 0), reverse=True)[:3]
+    if done:
+        out.append("최근 세션:")
+        for x in done:
+            t = x.get("last_activity", 0)
+            out.append(f"  - {time.strftime('%m-%d %H:%M', time.localtime(t))} 요청: {aiwf.short(x.get('request'), 100)}"
+                       f" → {aiwf.short(x.get('summary') or '(요약 없음)', 160)}")
+    return "\n".join(out)
+
+
+def trigger_sync(path):
+    if not aiwf.board_conf().get("BOARD_REPO"):
+        return
+    try:
+        subprocess.Popen([str(aiwf.ROOT / "bin" / "ai-board"), "sync", "--path", path, "--bg"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                         start_new_session=True)
+    except OSError:
+        pass
+
+
+def main():
+    try:
+        data = json.load(sys.stdin)
+    except ValueError:
+        return 0
+    event = data.get("hook_event_name", "")
+    sid = data.get("session_id") or "unknown"
+    cwd = data.get("cwd") or os.getcwd()
+    aiwf.ensure_dirs()
+    f = aiwf.session_file(sid)
+    s = aiwf.load_json(f, None)
+    if not s:
+        name, path = aiwf.project_of(cwd)
+        s = {"id": sid, "project": name, "path": path, "mode": MODE, "started": aiwf.now(),
+             "state": "idle", "request": "", "requests": [], "files": [], "commits": [],
+             "tools": 0, "last_tool": "", "summary": "", "note": "", "branch": ""}
+    name, path = s["project"], s["path"]
+    detail = ""
+    out = None
+
+    if event == "SessionStart":
+        aiwf.register_project(name, path)
+        s["state"] = "idle"
+        s["branch"] = git(path, "branch", "--show-current")
+        detail = data.get("source", "")
+        out = brief(s, name, path)
+    elif event == "UserPromptSubmit":
+        prompt = (data.get("prompt") or "").strip()
+        if prompt and not prompt.startswith("/"):
+            s["request"] = aiwf.short(prompt, 400)
+            s["requests"] = (s.get("requests") or [])[-19:] + [{"t": aiwf.now(), "text": aiwf.short(prompt, 400)}]
+        s.update(state="working", turn_started=aiwf.now(), turn_files=[], note="", summary="")
+        detail = aiwf.short(prompt, 200)
+    elif event == "PostToolUse":
+        tool, ti = data.get("tool_name", ""), data.get("tool_input") or {}
+        s["state"] = "working"
+        s["tools"] = s.get("tools", 0) + 1
+        if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+            fp = rel(ti.get("file_path") or ti.get("notebook_path") or "", path)
+            s["last_tool"] = f"수정 {fp}"
+            for key in ("files", "turn_files"):
+                lst = s.get(key) or []
+                if fp not in lst:
+                    lst.append(fp)
+                s[key] = lst[-200:]
+            detail = s["last_tool"]
+        elif tool == "Bash":
+            cmd = ti.get("command", "")
+            s["last_tool"] = "실행 " + aiwf.short(cmd, 80)
+            if re.search(r"\bgit\b.*\bcommit\b", cmd):
+                c = git(path, "log", "-1", "--format=%h %s")
+                if c and c not in (s.get("commits") or []):
+                    s["commits"] = (s.get("commits") or [])[-49:] + [c]
+                    detail = "커밋 " + c
+                    event = "Commit"
+        if not detail:
+            aiwf.save_json(f, {**s, "last_activity": aiwf.now()})
+            return 0    # 일반 도구 실행은 이벤트 기록을 남기지 않는다 (활동 시각만 갱신)
+    elif event == "Notification":
+        s["state"] = "needs_you"
+        s["note"] = aiwf.short(data.get("message", ""), 200)
+        detail = s["note"]
+    elif event == "Stop":
+        msg = data.get("last_assistant_message") or ""
+        s["summary"] = aiwf.short(msg, 600)
+        # 정확성 장치: 파일을 바꿨는데 STATUS.md 를 갱신하지 않았으면 한 번 되돌려 갱신하게 한다
+        changed = [x for x in (s.get("turn_files") or []) if not x.endswith("docs/STATUS.md")]
+        sp = aiwf.status_path(path)
+        if (MODE in ("personal", "work") and changed and sp.exists() and not data.get("stop_hook_active")
+                and sp.stat().st_mtime < s.get("turn_started", 0)):
+            s["state"] = "working"
+            aiwf.save_json(f, {**s, "last_activity": aiwf.now()})
+            print(json.dumps({"decision": "block", "reason":
+                              "이번 요청에서 파일을 바꿨는데 docs/STATUS.md 가 갱신되지 않았습니다. "
+                              "규칙대로 STATUS.md 를 갱신(진행 중/완료/판단 필요/다음 예정, 최종 갱신 시각)한 뒤 마무리하세요."},
+                             ensure_ascii=False))
+            return 0
+        s["state"] = "replied"
+        detail = aiwf.short(msg, 200)
+        if MODE != "lite":
+            trigger_sync(path)
+    elif event == "SessionEnd":
+        s["state"] = "ended"
+        detail = data.get("reason", "")
+        if MODE != "lite":
+            trigger_sync(path)
+
+    s["last_activity"] = aiwf.now()
+    aiwf.save_json(f, s)
+    aiwf.append_event({"t": s["last_activity"], "sid": sid, "project": name, "path": path,
+                       "event": event, "detail": detail})
+    if out:
+        print(out)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as e:  # 훅 오류로 세션을 막지 않는다
+        try:
+            aiwf.append_event({"t": aiwf.now(), "event": "HookError", "detail": repr(e)[:300]})
+        except Exception:
+            pass
+        sys.exit(0)

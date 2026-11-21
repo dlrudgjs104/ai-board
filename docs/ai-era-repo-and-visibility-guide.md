@@ -186,7 +186,7 @@ AI 세션은 휘발되므로 **세션이 아니라 파일이 기억**해야 한�
 | 가이드 항목 | 구현 위치 |
 |---|---|
 | ① 문서 규약 + 세션마다 규칙 적용 | `rules/core.md`, `bin/claude-*`(모드 런처, 선택한 세션에만 적용) |
-| ② GitHub Projects 단일 보드 | `github-projects/SETUP.md`, `bin/ai-board`, `rules/github-board.md` |
+| ② 단일 보드 | `bin/ai-board`(로컬 실시간 보드), `bin/ai-hook`(자동 기록), `rules/board.md`, `docs/github-setup.md`(GitHub 현황 이슈) |
 | ③ 검토 부담 줄이는 설계 | `rules/review-gate.md`, `rules/core.md`의 완료 조건 |
 | ④ 세션 연속성 | `rules/core.md`의 세션 시작/종료 절차, `templates/` |
 | ⑤ 대시보드 | GitHub Projects 보드 + `bin/ai-status`(터미널 요약) |

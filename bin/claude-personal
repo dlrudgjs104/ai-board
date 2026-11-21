@@ -27,7 +27,7 @@ fi
 if [[ "$mode" == "lite" ]]; then
   files=(lite.md)
 else
-  files=(core.md review-gate.md github-board.md "$mode.md")
+  files=(core.md review-gate.md board.md "$mode.md")
 fi
 
 prompt="[AI-MODE: $mode]"$'\n'
@@ -43,4 +43,19 @@ if [[ -n "$doc" ]]; then
 fi
 
 command -v claude >/dev/null || { echo "claude 가 없습니다. $ROOT/install.sh 를 실행하세요." >&2; exit 1; }
-exec claude --append-system-prompt "$prompt" "$@"
+
+# 진행 현황 자동 기록 훅 (이 런처로 시작한 세션에만 붙는다. 끄려면 AI_WORKFLOW_HOOKS=0)
+settings=()
+if [[ "${AI_WORKFLOW_HOOKS:-1}" != 0 ]] && command -v python3 >/dev/null; then
+  settings=(--settings "$(python3 -c '
+import json, shlex, sys
+h = shlex.quote(sys.argv[1])
+def e(m=None):
+    d = {"hooks": [{"type": "command", "command": h, "timeout": 10}]}
+    if m: d["matcher"] = m
+    return [d]
+print(json.dumps({"hooks": {"SessionStart": e(), "UserPromptSubmit": e(), "Notification": e(), "Stop": e(),
+                            "SessionEnd": e(), "PostToolUse": e("Edit|Write|MultiEdit|NotebookEdit|Bash")}}))' "$ROOT/bin/ai-hook")")
+fi
+export AI_WORKFLOW_MODE="$mode"
+exec claude "${settings[@]}" --append-system-prompt "$prompt" "$@"
