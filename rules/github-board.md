@@ -21,7 +21,8 @@
 `ai-board` 명령을 쓴다 (`~/ai-workflow/bin/ai-board`).
 - 작업 시작: 이슈가 보드에 있으면 `ai-board move <이슈URL> AI작업중`
 - 판단 필요: `ai-board move <이슈URL> 판단필요` 후 이슈에 질문을 코멘트로 남긴다
-- 작업 종료: `ai-board move <이슈URL> 검토대기`
-- 새 작업 등록: `ai-board add <owner/repo> "제목" "본문"`
+- 작업 종료: `ai-board move <이슈URL> 검토대기 <낮음|중간|높음>` (review-gate 기준 검토 필요도를 함께 표시)
+- 새 작업 등록: `ai-board add <owner/repo> "제목" "본문" [상태] [검토필요도]` (상태 기본 Backlog)
+- STATUS.md 항목에 이슈가 있으면 `(#번호)` 를 붙여 두어 다음 세션이 같은 카드를 찾게 한다.
 
 설정이 안 되어 있으면 `~/ai-workflow/github-projects/SETUP.md` 를 사용자에게 안내한다.

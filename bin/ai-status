@@ -37,8 +37,8 @@ def parse(path: Path):
         if h:
             cur = h.group(1) if h.group(1) in sections else None
             continue
-        if cur and re.match(r"^\s*-\s+", line):
-            item = re.sub(r"^\s*-\s+(\[[ xX]\]\s*)?", "", line).strip()
+        if cur and re.match(r"^-\s+", line):  # 들여쓴 하위 항목은 세지 않는다
+            item = re.sub(r"^-\s+(\[[ xX]\]\s*)?", "", line).strip()
             if item and item != "(없음)":
                 sections[cur].append(item)
     return updated, sections

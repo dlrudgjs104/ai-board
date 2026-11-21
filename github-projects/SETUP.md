@@ -70,10 +70,11 @@ ai-board use my-org 3       # 팀이 이미 쓰는 보드에 연결 (주소 http
 
 ## 6. 사용
 ```bash
-ai-board add owner/myproject "알림 기능 추가" "목표/완료 조건"   # 이슈 생성 + 보드 추가
+ai-board add owner/myproject "알림 기능 추가" "목표/완료 조건"            # 이슈 생성 + 보드 추가 (Backlog)
+ai-board add owner/myproject "결제 방식 결정" "선택지 A/B" 판단필요 높음  # 컬럼·검토필요도 지정
 ai-board move https://github.com/owner/myproject/issues/12 AI작업중
 ai-board move https://github.com/owner/myproject/issues/12 판단필요
-ai-board move https://github.com/owner/myproject/issues/12 검토대기
+ai-board move https://github.com/owner/myproject/issues/12 검토대기 중간
 ai-board list
 ```
 Claude 세션은 `rules/github-board.md` 에 따라 이 명령을 쓴다 (보드가 설정되어 있을 때만, 실패해도 작업은 막지 않는다).
