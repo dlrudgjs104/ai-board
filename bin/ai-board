@@ -8,7 +8,9 @@
                                   카드(이슈)를 모을 추적 레포와 보드 설정. 레포가 없으면 --create 로 비공개 생성
   ai-board status                 설정·로그인·대기열·최근 오류 점검
   ai-board close <번호> [메모]      확인 끝: 카드를 완료로 옮기고 이슈 닫기
+  ai-board title <번호|--session ID> "요청 요약 > 수정된 내용"   카드 제목 바꾸기 (푸시 뒤 훅이 안내)
   ai-board flush                  대기열에 남은 보드 작업을 지금 보내기
+  ai-board archive [--days 14]    완료 후 며칠 지난 카드를 보드에서 보관 (하루 한 번 자동으로도 함)
 
 세션 카드는 claude-personal / claude-work 세션에서 훅이 자동으로 만들고 옮긴다:
   작업 시작 → AI작업중 · 질문/권한 승인 → 판단필요 · 답변 끝 → 검토대기(+보고 코멘트) · 이슈 닫기 → 완료
@@ -156,17 +158,21 @@ def cmd_setup(a):
     else:
         print(f"보드 사용: #{number}")
     p, fields = ghboard.load_board_ids(owner, int(number))
-    # 3) 컬럼: 새 보드면 워크플로우 컬럼으로 바꾼다. 기존 보드는 빠진 컬럼이 있을 때만 (--reset-columns)
+    # 3) 컬럼: 빠진 컬럼이 있으면 맞춘다. 기본 컬럼(Todo/In Progress/Done)은 ID 를 유지한 채 이름만 바꿔서
+    #    GitHub 기본 자동화(Item closed → Done, Auto-close issue 등)가 그대로 '완료' 를 가리키게 한다
     st = fields.get("Status")
-    have = {o["name"] for o in (st or {}).get("options", [])}
+    have = {o["name"]: o["id"] for o in (st or {}).get("options", [])}
     missing = [c for c in ghboard.COLUMNS if c not in have]
-    if missing and (fresh or a.reset_columns):
-        opts = ",".join('{name:"%s",color:%s,description:"%s"}' % (c, *ghboard.COLUMN_DESC[c]) for c in ghboard.COLUMNS)
-        ghboard.graphql("mutation($f:ID!){updateProjectV2Field(input:{fieldId:$f,singleSelectOptions:[%s]}){projectV2Field{__typename}}}" % opts,
-                        f=st["id"])
-        print("컬럼 설정: " + " / ".join(ghboard.COLUMNS))
+    if missing and (fresh or a.reset_columns or set(have) <= {"Todo", "In Progress", "Done"} | set(ghboard.COLUMNS)):
+        keep = {"Backlog": have.get("Backlog") or have.get("Todo"), "AI작업중": have.get("AI작업중") or have.get("In Progress"),
+                "완료": have.get("완료") or have.get("Done"), "판단필요": have.get("판단필요"), "검토대기": have.get("검토대기")}
+        opts = [({"id": keep[c]} if keep.get(c) else {}) | {"name": c, "color": ghboard.COLUMN_DESC[c][0],
+                                                          "description": ghboard.COLUMN_DESC[c][1]} for c in ghboard.COLUMNS]
+        ghboard.graphql("mutation($f:ID!,$o:[ProjectV2SingleSelectFieldOptionInput!]){updateProjectV2Field("
+                        "input:{fieldId:$f,singleSelectOptions:$o}){projectV2Field{__typename}}}", f=st["id"], o=opts)
+        print("컬럼 설정: " + " / ".join(ghboard.COLUMNS) + "  (Done→완료 로 이름만 바꿔 '닫으면 완료' 자동화 유지)")
     elif missing:
-        print(f"  ! 보드에 없는 컬럼: {', '.join(missing)} — 웹에서 Status 옵션에 추가하거나 --reset-columns (기존 카드의 컬럼 값이 지워짐)")
+        print(f"  ! 보드에 없는 컬럼: {', '.join(missing)} — 웹에서 Status 옵션에 추가하거나 --reset-columns")
     if "검토필요도" not in fields:
         subprocess.run(["gh", "project", "field-create", str(number), "--owner", owner, "--name", "검토필요도",
                         "--data-type", "SINGLE_SELECT", "--single-select-options", "낮음,중간,높음"], capture_output=True)
@@ -175,9 +181,8 @@ def cmd_setup(a):
         print(f"보드를 {repo} 에 연결 (레포의 Projects 탭에 표시)")
     data = ghboard.save_board(owner, int(number), repo)
     print(f"\n보드 주소: {data['url']}")
-    print("웹에서 1회 (1분):")
-    print("  1. 보드 ⋯ → Workflows → 'Item closed' 켜고 Status 를 '완료' 로 → 이슈를 닫으면 카드가 완료로 이동")
-    print("  2. 보기(View) 레이아웃을 Board 로, 프로젝트별 탭은 필터에 label:proj:<이름> 을 넣고 Save")
+    print("자동 설정됨: 이슈 닫힘 ↔ 완료 (GitHub 기본 자동화), 완료 후 14일 지난 카드 자동 보관(ai-board archive)")
+    print("웹에서 원하면: 보기(View)를 Board 레이아웃으로, 프로젝트별 탭은 필터 label:proj:<이름> 으로 Save")
 
 
 def cmd_status(_):
@@ -211,10 +216,39 @@ def cmd_close(a):
         ghboard.set_status(num, "완료")
         if a.memo:
             ghboard.comment(num, " ".join(a.memo))
-        ghboard.rest("PATCH", f"repos/{c['repo']}/issues/{num}", {"state": "closed", "state_reason": "completed"})
+        ghboard.close_issue(num)
     except GitHubError as e:
         die(f"닫지 못했습니다: {e}")
     print(f"#{num} → 완료, 이슈 닫음")
+
+
+def cmd_title(a):
+    need_board()
+    words = list(a.words)
+    num = None if a.session else words.pop(0)
+    text = " ".join(words).strip()
+    if not text:
+        die("제목이 필요합니다: ai-board title <번호> \"요청 요약 > 수정된 내용\"")
+    if a.session:   # 세션 ID 로 지정: 카드가 아직 만들어지는 중이어도 대기열이 처리한다
+        ghboard.enqueue(a.session, rename=text)
+        ghboard.spawn_worker()
+        print(f"카드 제목 변경 예약: {text}")
+        return
+    need_gh()
+    try:
+        ghboard.rename(int(num.lstrip("#")), text)
+    except (GitHubError, ValueError) as e:
+        die(f"제목을 바꾸지 못했습니다: {e}")
+    print(f"#{num.lstrip('#')} 제목: {text}")
+
+
+def cmd_archive(a):
+    need_gh(); need_board()
+    try:
+        n = ghboard.archive_done(a.days)
+    except GitHubError as e:
+        die(f"보관하지 못했습니다: {e}")
+    print(f"보관한 카드: {n}개 (완료 후 {a.days}일 지난 것)")
 
 
 def cmd_flush(_):
@@ -238,6 +272,8 @@ def main():
     s.add_argument("--board", type=int); s.add_argument("--reset-columns", action="store_true")
     r = sub.add_parser("register"); r.add_argument("path")
     cl = sub.add_parser("close"); cl.add_argument("num"); cl.add_argument("memo", nargs="*")
+    ti = sub.add_parser("title"); ti.add_argument("--session"); ti.add_argument("words", nargs="+")
+    ar = sub.add_parser("archive"); ar.add_argument("--days", type=int, default=14)
     a = ap.parse_args()
     if a.cmd == "register":
         aiwf.register_project(*aiwf.project_of(os.path.abspath(a.path)))
@@ -245,7 +281,7 @@ def main():
         ghboard.worker()
     else:
         {"open": cmd_open, None: cmd_open, "list": cmd_list, "status": cmd_status, "flush": cmd_flush,
-         "task": cmd_task, "setup": cmd_setup, "close": cmd_close}[a.cmd](a)
+         "task": cmd_task, "setup": cmd_setup, "close": cmd_close, "title": cmd_title, "archive": cmd_archive}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@
 - 전송기(ai-board worker)는 컴퓨터에 하나만 돌고, 호출 사이에 간격을 두며, 카드 본문은 1분에 한 번까지만 고친다
 - 한도·일시 오류는 기다렸다 다시 보낸다 (대기열에 남아 있으므로 잃지 않음)
 """
+import calendar
 import fcntl
 import json
 import os
@@ -208,6 +209,48 @@ def update_body(num, body):
     save_card(num, body_t=time.time())
 
 
+def rename(num, title):
+    """카드(이슈) 제목을 바꾼다. 프로젝트 접두어 [이름] 은 자동으로 붙인다."""
+    c, card = conf(), cards().get(str(num), {})
+    proj = card.get("project")
+    if proj and not title.startswith(f"[{proj}]"):
+        title = f"[{proj}] {title}"
+    rest("PATCH", f"repos/{c['repo']}/issues/{num}", {"title": title[:250]})
+    save_card(num, title=title)
+
+
+def archive_done(days=14):
+    """완료 칸에서 이슈가 닫힌 지 days 일 지난 카드를 보드에서 보관한다 (이슈는 그대로). 보관한 수를 돌려준다."""
+    c = conf()
+    d = graphql("""query($p:ID!){ node(id:$p){ ... on ProjectV2{ items(first:100){ nodes{ id isArchived
+                   fieldValueByName(name:"Status"){ ... on ProjectV2ItemFieldSingleSelectValue{ name } }
+                   content{ ... on Issue{ number closedAt } } } } } } }""", p=c["project_id"])
+    cutoff = time.time() - days * 86400
+    n = 0
+    for it in d["node"]["items"]["nodes"]:
+        st = (it.get("fieldValueByName") or {}).get("name")
+        closed = (it.get("content") or {}).get("closedAt")
+        if it.get("isArchived") or st != "완료" or not closed:
+            continue
+        if calendar.timegm(time.strptime(closed, "%Y-%m-%dT%H:%M:%SZ")) < cutoff:
+            graphql("mutation($p:ID!,$i:ID!){archiveProjectV2Item(input:{projectId:$p,itemId:$i}){item{id}}}",
+                    p=c["project_id"], i=it["id"])
+            n += 1
+    c["archived_t"] = time.time()
+    aiwf.save_json(BOARD, c)
+    return n
+
+
+def close_issue(num):
+    """이슈를 닫는다. 보드 자동화(Auto-close issue)가 먼저 닫았으면 그대로 둔다."""
+    c = conf()
+    try:
+        rest("PATCH", f"repos/{c['repo']}/issues/{num}", {"state": "closed", "state_reason": "completed"})
+    except GitHubError as e:
+        if "422" not in str(e) and "Validation" not in str(e):
+            raise
+
+
 def comment(num, text):
     c = conf()
     rest("POST", f"repos/{c['repo']}/issues/{num}/comments", {"body": text})
@@ -256,7 +299,7 @@ def enqueue(sid, **ops):
             else:
                 q[k] = v
         # 상태 변경·코멘트·카드 생성은 미뤄 둔 본문 수정을 기다리지 않고 바로 보낸다
-        if any(ops.get(k) for k in ("status", "review", "create", "bind", "comments", "final")):
+        if any(ops.get(k) for k in ("status", "review", "create", "bind", "comments", "final", "rename", "close")):
             q.pop("not_before", None)
             if not ops.get("tentative"):
                 q.pop("tentative", None)
@@ -336,6 +379,8 @@ def process(q):
         set_status(num, q["status"])
     if q.get("review"):
         set_review(num, q["review"])
+    if q.get("rename"):
+        rename(num, q["rename"])
     left = {}
     if q.get("body"):
         wait = BODY_GAP - (time.time() - (cards().get(str(num), {}).get("body_t") or 0))
@@ -345,6 +390,8 @@ def process(q):
             update_body(num, render_body(s))
     for text in q.get("comments", []):
         comment(num, text)
+    if q.get("close"):
+        close_issue(num)
     return left or None
 
 
@@ -358,7 +405,11 @@ def worker(foreground=False):
         return "이미 전송기가 돌고 있습니다"
     idle_since = time.time()
     backoff = 30
+    code = [aiwf.ROOT / "lib" / "ghboard.py", aiwf.ROOT / "lib" / "aiwf.py"]
+    code_t = max(f.stat().st_mtime for f in code)
     while True:
+        if max(f.stat().st_mtime for f in code) != code_t:
+            break       # 코드가 업데이트됨: 끝내고 새 코드로 다시 띄운다 (아래 spawn)
         files = sorted(QUEUE.glob("*.json"), key=lambda p: p.stat().st_mtime)
         ready = [f for f in files if aiwf.load_json(f, {}).get("not_before", 0) <= time.time()]
         if not ready:
@@ -383,8 +434,13 @@ def worker(foreground=False):
                     backoff = min(backoff * 2, 900)
                     break
                 # 되돌릴 수 없는 오류(권한, 잘못된 ID 등)는 버리고 기록만 남긴다
+    if not foreground and time.time() - conf().get("archived_t", 0) > 86400:
+        try:
+            archive_done()          # 하루 한 번: 완료 후 14일 지난 카드 보관
+        except GitHubError:
+            pass
     lock.close()
-    # 끝나는 사이에 들어온 작업이 있으면 이어서 처리
+    # 끝나는 사이에 들어온 작업이 있거나 코드가 바뀌었으면 새 전송기로 이어서 처리
     if any(QUEUE.glob("*.json")) and not foreground:
         spawn_worker()
     return "대기열 비움"

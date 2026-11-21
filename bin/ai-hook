@@ -112,7 +112,7 @@ def main():
     board = MODE != "lite" and ghboard.configured()
     card = ghboard.card_of(sid) if board else None
     ops = None          # 보드 대기열에 넣을 작업
-    detail, out = "", None
+    detail, out, out_ctx = "", None, None     # out: 세션 시작·요청 때 문맥, out_ctx: 도구 실행 뒤 문맥
 
     if event == "SessionStart":
         aiwf.register_project(name, path)
@@ -189,16 +189,27 @@ def main():
                 if c and c not in (s.get("commits") or []):
                     s["commits"] = (s.get("commits") or [])[-49:] + [c]
                     s["turn_commits"] = s.get("turn_commits", 0) + 1
+                    s["pushed_commits"] = (s.get("pushed_commits") or []) + [c.split(" ", 1)[-1]]
                     detail, event = "커밋 " + c, "Commit"
                     if board:
                         ops = {"body": True} if card else {"create": True, "status": "AI작업중", "body": True}
+            resp = json.dumps(data.get("tool_response") or "", ensure_ascii=False)
+            if re.search(r"\bgit\b.*\bpush\b", cmd) and not re.search(r"rejected|error:|fatal:", resp):
+                s["pushed"], s["renamed"] = True, False
+                detail, event = "푸시 " + aiwf.short(cmd, 60), "Push"
+                if board:
+                    ops = ops or {"body": True}
+                    out_ctx = ("[ai-workflow] 푸시했다. 이 세션 보드 카드의 제목을 '요청 요약 > 수정된 내용' 으로 바꾼다 "
+                               f"(각각 25자 안팎, 사람이 한눈에 알아보게). 실행: ai-board title --session {sid} \"요청 요약 > 수정된 내용\"")
+            if re.search(r"\bai-board\b.*\btitle\b", cmd):
+                s["renamed"] = True
         elif tool == "AskUserQuestion":
             s["note"] = ""
             if board and card:
                 ops = {"status": "AI작업중"}
         if not detail and not ops:
             aiwf.save_json(f, {**s, "last_activity": aiwf.now()})
-            return 0    # 일반 도구 실행은 활동 시각만 갱신
+            return 0    # 일반 도구 실행은 활동 시각만 갱신 (ai-board title 실행 표시는 위에서 저장됨)
 
     elif event == "Notification":
         msg = data.get("message", "")
@@ -232,13 +243,27 @@ def main():
         worked = bool(changed or s.get("turn_commits"))
         # 레포가 아닌 폴더(홈 등)에서 시작해 아직 고친 파일이 없으면 프로젝트를 알 수 없으므로 카드를 만들지 않는다
         long_turn = aiwf.now() - s.get("turn_started", aiwf.now()) > 60 and aiwf.is_repo(path)
+        pushed_now = bool(s.get("pushed"))
+        if board and s.get("pushed") and not s.get("renamed"):
+            # AI가 제목을 안 바꿨으면 '첫 요청 > 이번에 푸시한 커밋' 으로 바꾼다
+            first = (s.get("requests") or [{}])[0].get("text") or s.get("request") or "작업"
+            done = " · ".join(dict.fromkeys(s.get("pushed_commits") or [])) or "푸시함"
+            ghboard.enqueue(sid, rename=f"{aiwf.short(first, 40)} > {aiwf.short(done, 60)}")
+            s["renamed"] = True
+        if s.get("pushed"):
+            s["pushed"], s["pushed_commits"] = False, []
         if board and not (card or worked or long_turn):
             ghboard.cancel_tentative(sid)
         if board and (card or worked or long_turn):
+            # personal 모드에서 커밋·푸시까지 했으면 그 작업은 끝난 것이므로 완료 처리 (work 는 PR 검토가 남아 검토대기).
+            # 푸시 뒤 마지막 줄의 질문("확인할까요?")은 다음 작업 제안이라 완료를 막지 않고 보고 코멘트에만 남긴다
+            done = pushed_now and MODE == "personal"
+            if done:
+                q = False
             head = "### ❓ 확인이 필요합니다" if q else "### ✅ 작업 보고"
-            ops = {"create": True, "status": "판단필요" if q else "검토대기", "review": review_level(msg),
-                   "body": True, "final": True,
-                   "comments": [f"{head}\n\n{aiwf.short_lines(msg, 4000)}"] if (worked or q) else []}
+            ops = {"create": True, "status": "완료" if done else ("판단필요" if q else "검토대기"),
+                   "review": review_level(msg), "body": True, "final": True, "close": done,
+                   "comments": [f"{head}\n\n{aiwf.short_lines(msg, 4000)}"] if (worked or q or pushed_now) else []}
 
     elif event == "SessionEnd":
         s["state"] = "ended"
@@ -255,6 +280,8 @@ def main():
         ghboard.spawn_worker()
     if out:
         print(out)
+    if out_ctx:
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": out_ctx}}, ensure_ascii=False))
     return 0
 
 
