@@ -1,7 +1,20 @@
 # GitHub Projects 단일 보드 설정 ("AI Board")
 
 여러 레포의 작업을 한 보드에서 본다. 한 번만 설정하면 된다.
-`gh`(GitHub CLI)가 이 PC에 아직 없어서 1~2단계가 먼저 필요하다.
+
+> **빠른 방법:** `./install.sh --board` 가 아래 1~3단계(gh 설치, 로그인, project 권한, 보드 생성/연결)를 물어보면서 진행한다.
+> Status 옵션도 자동으로 바뀌므로, 웹에서는 5단계(레포 연결·자동화)와 보기 설정만 하면 된다. 진행 상태는 언제든 `ai-board status` 로 확인한다.
+
+## 필요한 계정·권한
+| 항목 | 왜 필요한가 | 확인 |
+|---|---|---|
+| GitHub 계정 | 이슈·보드가 GitHub 에 있다 | `gh api user -q .login` |
+| gh 로그인 | 터미널에서 이슈 생성·보드 이동 | `gh auth status` |
+| `project` 권한(scope) | Projects 보드 읽기·쓰기. 기본 로그인에는 없다 | `gh auth status` 의 Token scopes 에 `'project'` |
+| 레포 쓰기 권한 | 이슈를 만들 레포. 남의 레포면 collaborator 초대 필요 | 레포 Settings → Collaborators |
+| (팀 보드) 보드 접근 권한 | 조직/동료 보드에 붙을 때. 보드 소유자가 Settings → Manage access 에서 추가 | `ai-board use <owner> <번호>` 성공 여부 |
+
+토큰은 gh 가 로컬에 보관하며 이 레포에 저장되지 않는다.
 
 ## 1. gh 설치 (WSL Ubuntu/Debian)
 ```bash
@@ -21,16 +34,18 @@ gh auth status                   # project 가 scopes 에 보여야 함
 ```
 > 토큰은 gh 가 로컬에 보관한다. 레포에 올라가지 않는다.
 
-## 3. 보드 생성
+## 3. 보드 생성 또는 연결
 ```bash
-~/ai-workflow/bin/ai-board setup
+ai-board setup              # 내 계정에 새 보드
+ai-board setup my-org       # 조직 아래에 새 보드 (조직에서 프로젝트 생성 권한 필요)
+ai-board use my-org 3       # 팀이 이미 쓰는 보드에 연결 (주소 https://github.com/orgs/my-org/projects/3)
 ```
 - 개인 계정 아래에 "AI Board" 프로젝트(기본 비공개)를 만들고, `검토필요도`(낮음/중간/높음) 필드를 추가한다.
 - 보드 번호는 `~/ai-workflow/.board` 에 저장된다.
 - **공개로 바꾸지 말 것.** 회사 작업 제목이 보드에 들어갈 수 있다.
 
-## 4. Status 옵션 이름 변경 (웹, 1분, 1회)
-`gh` 로는 기본 Status 옵션을 바꿀 수 없어서 웹에서 한다.
+## 4. Status 옵션 이름 (자동, 실패 시에만 웹에서)
+`ai-board setup` 이 API로 아래 5개 옵션을 만든다. 실패했다고 나오거나 `ai-board use` 로 기존 보드에 붙었다면 웹에서 맞춘다.
 1. GitHub → 프로필 → Projects → "AI Board" 열기
 2. 우측 상단 `⋯` → Settings → Fields → **Status**
 3. 옵션을 아래 5개로 맞춘다 (이름을 정확히, 공백 없이):
@@ -47,6 +62,7 @@ gh auth status                   # project 가 scopes 에 보여야 함
 
 ## 5. 레포 연결과 자동화 (웹)
 - 보드 `⋯` → Settings → **Manage access / Linked repositories** 에서 사용할 레포를 연결한다 (`ai-board link owner/repo` 도 가능).
+  - 연결은 **보드와 소유자가 같은 레포만** 된다. 개인 보드에 조직 레포를 연결할 수는 없지만, 조직 레포의 이슈를 카드로 올리는 것(`ai-board add`)은 문제없다.
 - Settings → **Workflows** 에서 다음을 켜면 손이 덜 간다.
   - *Item added to project* → Status = Backlog
   - *Pull request merged* / *Item closed* → Status = 완료
@@ -71,4 +87,5 @@ Claude 세션은 `rules/github-board.md` 에 따라 이 명령을 쓴다 (보드
 이슈·보드는 GitHub 레포가 있어야 쓸 수 있다. 로컬 전용 프로젝트는 `ai-status`(STATUS.md)만으로 먼저 운영하고, 레포를 만든 뒤 보드에 연결한다. (비공개 레포로 만들고 시크릿 커밋 금지 규칙을 지킬 것: `rules/core.md` 시크릿 절)
 
 ## 알려진 한계
-- `ai-board` 는 gh 가 없는 환경에서 작성해 아직 실제로 실행해 보지 못했다. 설치·인증 후 `ai-board setup` 과 `move` 를 한 번 시험하고, 안 맞는 부분이 있으면 알려 달라.
+- `ai-board use` 로 붙은 기존 보드는 Status 옵션을 바꾸지 않는다. 이름이 다르면 `ai-board move` 가 보드에 있는 옵션 목록을 보여 주며 실패한다.
+- `ai-board move` 는 보드 항목을 최대 500개까지만 찾는다.

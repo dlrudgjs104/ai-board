@@ -4,6 +4,7 @@
 #   ai-init -n <경로>           실제로 만들지 않고 무엇을 만들지만 출력
 set -euo pipefail
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+SHOWN_ROOT="${ROOT/#$HOME/\~}"
 
 dry=0
 if [[ "${1:-}" == "-n" ]]; then dry=1; shift; fi
@@ -12,8 +13,8 @@ target="${1:?사용법: ai-init [-n] <프로젝트 경로>}"
 target="$(cd "$target" && pwd)"
 
 do_mkdir() { if [[ -d "$1" ]]; then echo "  = 있음  ${1#$target/}"; else echo "  + 생성  ${1#$target/}/"; [[ $dry == 1 ]] || mkdir -p "$1"; fi; }
-do_copy()  { # src dst
-  if [[ -e "$2" ]]; then echo "  = 있음  ${2#$target/}"; else echo "  + 생성  ${2#$target/}"; [[ $dry == 1 ]] || cp "$1" "$2"; fi
+do_copy()  { # src dst. 템플릿 속 ~/ai-workflow 는 실제 설치 경로로 바꾼다
+  if [[ -e "$2" ]]; then echo "  = 있음  ${2#$target/}"; else echo "  + 생성  ${2#$target/}"; [[ $dry == 1 ]] || sed "s#~/ai-workflow#$SHOWN_ROOT#g" "$1" > "$2"; fi
 }
 
 echo "대상: $target $([[ $dry == 1 ]] && echo '(dry-run)')"

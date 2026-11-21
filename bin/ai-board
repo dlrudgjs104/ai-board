@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# GitHub Projects 단일 보드("AI Board") 보조 명령. gh CLI 필요 (설정: github-projects/SETUP.md).
+#   ai-board setup [owner]               보드 생성 + 번호 저장. owner 생략 시 내 계정, 조직이면 조직 이름
+#   ai-board use <owner> <번호>           팀이 이미 쓰는 보드에 연결 (보드 주소 .../projects/<번호>)
+#   ai-board status                      GitHub 로그인·권한·보드 설정 상태 점검
+#   ai-board add <owner/repo> 제목 [본문]  이슈 생성 + 보드 추가 (Backlog)
+#   ai-board move <이슈URL> <상태>         상태: Backlog | AI작업중 | 판단필요 | 검토대기 | 완료
+#   ai-board list                        보드 항목 목록
+#   ai-board link <owner/repo>           레포를 보드에 연결 (보드와 소유자가 같은 레포만. 카드 추가에는 필요 없음)
+set -euo pipefail
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+CONF="$ROOT/.board"          # BOARD_OWNER, BOARD_NUMBER (gitignore 대상)
+TITLE="AI Board"
+
+command -v gh >/dev/null || { echo "GitHub CLI(gh) 가 없습니다. $ROOT/install.sh --board 를 실행하거나 github-projects/SETUP.md 1~2단계를 하세요." >&2; exit 1; }
+need_auth() {
+  gh auth status >/dev/null 2>&1 || { echo "GitHub 로그인이 필요합니다: gh auth login -s project" >&2; exit 1; }
+  gh auth status 2>&1 | grep -q "'project'" || { echo "project 권한이 없습니다: gh auth refresh -h github.com -s project" >&2; exit 1; }
+}
+[[ -f "$CONF" ]] && source "$CONF"
+OWNER="${BOARD_OWNER:-@me}"
+
+need_board() { [[ -n "${BOARD_NUMBER:-}" ]] || { echo "보드가 설정되지 않았습니다. 먼저: ai-board setup" >&2; exit 1; }; }
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  setup)
+    need_auth
+    if [[ -n "${BOARD_NUMBER:-}" ]]; then echo "이미 설정됨: owner=$OWNER number=$BOARD_NUMBER"; exit 0; fi
+    OWNER="${1:-$OWNER}"
+    out="$(gh project create --owner "$OWNER" --title "$TITLE" --format json)"
+    read -r num purl < <(printf '%s' "$out" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["number"], d.get("url",""))')
+    printf 'BOARD_OWNER=%s\nBOARD_NUMBER=%s\n' "$OWNER" "$num" > "$CONF"
+    gh project field-create "$num" --owner "$OWNER" --name "검토필요도" --data-type SINGLE_SELECT \
+      --single-select-options "낮음,중간,높음" >/dev/null
+    # 기본 Status 옵션(Todo/In Progress/Done)을 워크플로우 컬럼으로 교체
+    fid="$(gh project field-list "$num" --owner "$OWNER" --format json -q '.fields[]|select(.name=="Status")|.id')"
+    if gh api graphql -f f="$fid" -f query='mutation($f:ID!){updateProjectV2Field(input:{fieldId:$f,singleSelectOptions:[
+        {name:"Backlog",color:GRAY,description:"시작 전"},
+        {name:"AI작업중",color:YELLOW,description:"AI가 진행 중"},
+        {name:"판단필요",color:RED,description:"사람 결정 대기"},
+        {name:"검토대기",color:GREEN,description:"AI 완료, 사람 검토 대기"},
+        {name:"완료",color:PURPLE,description:"확인 끝"}]}){projectV2Field{__typename}}}' >/dev/null; then
+      echo "보드 생성됨 (number=$num). Status 컬럼: Backlog / AI작업중 / 판단필요 / 검토대기 / 완료"
+    else
+      echo "보드 생성됨 (number=$num). Status 옵션 변경에 실패했습니다. 웹에서 바꾸세요 (SETUP.md 4단계):"
+      echo "  Backlog / AI작업중 / 판단필요 / 검토대기 / 완료"
+    fi
+    [[ -n "$purl" ]] && echo "보드 주소: $purl"
+    ;;
+  use)
+    need_auth
+    o="${1:?사용법: ai-board use <owner> <번호>}"; n="${2:?보드 번호가 필요합니다}"
+    title="$(gh project view "$n" --owner "$o" --format json -q .title)" || { echo "보드를 열 수 없습니다. 소유자/번호와 접근 권한을 확인하세요." >&2; exit 1; }
+    printf 'BOARD_OWNER=%s\nBOARD_NUMBER=%s\n' "$o" "$n" > "$CONF"
+    echo "연결됨: $title (owner=$o number=$n)"
+    ;;
+  status)
+    echo "GitHub CLI: $(gh --version | head -1 | awk '{print $3}')"
+    if gh auth status >/dev/null 2>&1; then
+      echo "로그인  : $(gh api user -q .login 2>/dev/null || echo '확인 실패')"
+      gh auth status 2>&1 | grep -q "'project'" && echo "권한    : project 있음" || echo "권한    : project 없음 → gh auth refresh -h github.com -s project"
+    else
+      echo "로그인  : 안 됨 → gh auth login -s project"
+    fi
+    if [[ -n "${BOARD_NUMBER:-}" ]]; then echo "보드    : owner=$OWNER number=$BOARD_NUMBER"; else echo "보드    : 미설정 → ai-board setup"; fi
+    ;;
+  add)
+    need_auth; need_board
+    repo="${1:?사용법: ai-board add <owner/repo> 제목 [본문]}"; title="${2:?제목이 필요합니다}"; body="${3:-}"
+    url="$(gh issue create --repo "$repo" --title "$title" --body "$body")"
+    gh project item-add "$BOARD_NUMBER" --owner "$OWNER" --url "$url" >/dev/null
+    echo "$url"
+    ;;
+  move)
+    need_auth; need_board
+    url="${1:?사용법: ai-board move <이슈URL> <상태>}"; status="${2:?상태가 필요합니다}"
+    pid="$(gh project view "$BOARD_NUMBER" --owner "$OWNER" --format json | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')"
+    fields="$(gh project field-list "$BOARD_NUMBER" --owner "$OWNER" --format json)"
+    items="$(gh project item-list "$BOARD_NUMBER" --owner "$OWNER" --format json --limit 500)"
+    ids="$(FIELDS="$fields" ITEMS="$items" URL="$url" STATUS="$status" python3 - <<'PY'
+import json, os, sys
+fields = json.loads(os.environ["FIELDS"])["fields"]
+items = json.loads(os.environ["ITEMS"])["items"]
+st = next((f for f in fields if f["name"] == "Status"), None)
+if not st: sys.exit("Status 필드를 찾지 못했습니다")
+opt = next((o for o in st.get("options", []) if o["name"] == os.environ["STATUS"]), None)
+if not opt: sys.exit("Status 옵션 '%s' 없음. 보드의 옵션: %s" % (os.environ["STATUS"], ", ".join(o["name"] for o in st.get("options", []))))
+it = next((i for i in items if (i.get("content") or {}).get("url") == os.environ["URL"]), None)
+if not it: sys.exit("보드에서 해당 이슈를 찾지 못했습니다: " + os.environ["URL"])
+print(it["id"], st["id"], opt["id"])
+PY
+)"
+    read -r item_id field_id opt_id <<<"$ids"
+    gh project item-edit --project-id "$pid" --id "$item_id" --field-id "$field_id" --single-select-option-id "$opt_id" >/dev/null
+    echo "→ $status : $url"
+    ;;
+  list)
+    need_auth; need_board
+    gh project item-list "$BOARD_NUMBER" --owner "$OWNER" --limit 100
+    ;;
+  link)
+    need_auth; need_board
+    repo="${1:?사용법: ai-board link <owner/repo>}"
+    gh project link "$BOARD_NUMBER" --owner "$OWNER" --repo "$repo"
+    ;;
+  *)
+    sed -n '2,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 2
+    ;;
+esac
