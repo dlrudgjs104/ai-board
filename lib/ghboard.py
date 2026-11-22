@@ -180,26 +180,27 @@ def ensure_labels(repo, project):
     aiwf.save_json(BOARD, c)
 
 
-def create_card(project, title, body, status="AI작업중", sid=""):
+def create_card(project, title, body, status="AI작업중", sid="", opened_t=None):
     c = conf()
     ensure_labels(c["repo"], project)
     it = rest("POST", f"repos/{c['repo']}/issues", {"title": f"[{project}] {title}", "body": body,
                                                     "labels": ["ai-card", f"proj:{project}"]})
     item = add_to_board(it["node_id"])
     save_card(it["number"], item=item, sids=[sid], project=project, url=it["html_url"], title=it["title"],
-              status=None, body_t=time.time(), created=time.time())
+              status=None, body_t=time.time(), created=time.time(), bound_t=time.time(), opened_t=opened_t)
     set_status(it["number"], status)
     return it["number"]
 
 
-def bind_card(num, sid, project):
+def bind_card(num, sid, project, opened_t=None):
     """이미 있는 이슈(보드에 미리 만든 카드 등)를 이 세션의 카드로 쓴다."""
     c = conf()
     it = rest("GET", f"repos/{c['repo']}/issues/{num}")
     item = add_to_board(it["node_id"])      # 이미 보드에 있으면 기존 항목 ID 가 돌아온다
     prev = cards().get(str(num), {})
     save_card(num, item=item, sids=list(dict.fromkeys((prev.get("sids") or []) + [sid])), project=project,
-              url=it["html_url"], title=it["title"], status=prev.get("status"))
+              url=it["html_url"], title=it["title"], status=prev.get("status"), bound_t=time.time(),
+              opened_t=prev.get("opened_t") or opened_t)
     return num
 
 
@@ -257,22 +258,27 @@ def comment(num, text):
 
 
 # ---------------------------------------------------------------- 카드 본문
-def render_body(s):
+def render_body(s, since=None):
+    """since: 이 카드가 열린 시각. 그 뒤의 요청·파일·커밋만 보여 준다 (세션 하나가 카드 여러 개를 거치므로)."""
     t = lambda x: time.strftime("%m-%d %H:%M", time.localtime(x or 0))
     live = {"working": "⚙ AI 작업 중", "needs_you": "🔔 사람 확인 대기", "replied": "✅ 답변 완료", "idle": "· 대기",
             "ended": "■ 세션 종료"}.get(s.get("state"), s.get("state"))
     lines = [f"> 🤖 ai-workflow 자동 기록 · 프로젝트 **{s.get('project')}** · 모드 {s.get('mode')} · 세션 `{s.get('id', '')[:8]}`"
              f"{' · 브랜치 `' + s['branch'] + '`' if s.get('branch') else ''}", "",
              f"**현재:** {live} (마지막 활동 {t(s.get('last_activity'))})", "", "### 요청"]
-    for r in (s.get("requests") or [])[-15:]:
+    reqs = [r for r in (s.get("requests") or []) if not since or r["t"] >= since]
+    for r in reqs[-15:]:
         lines.append(f"- {t(r['t'])} {aiwf.short(r['text'], 300)}")
-    files = s.get("files") or []
+    files, commits = s.get("files") or [], s.get("commits") or []
+    if since and s.get("file_t") is not None:       # 편집·커밋 시각이 기록된 세션: 이 카드 이후 것만
+        files = [f for f in files if s["file_t"].get(f, since) >= since]
+        commits = [c for c in commits if (s.get("commit_t") or {}).get(c, since) >= since]
     if files:
         lines += ["", f"### 수정한 파일 ({len(files)})"] + [f"- `{f}`" for f in files[-30:]]
         if len(files) > 30:
             lines.append(f"- … 외 {len(files) - 30}개")
-    if s.get("commits"):
-        lines += ["", "### 커밋"] + [f"- `{c}`" for c in s["commits"][-15:]]
+    if commits:
+        lines += ["", "### 커밋"] + [f"- `{c}`" for c in commits[-15:]]
     if s.get("summary"):
         lines += ["", "### 마지막 답변", "", "\n".join("> " + l for l in aiwf.short_lines(s["summary"], 1500).splitlines())]
     lines += ["", "---", f"이어서 열기: `cd {s.get('path')} && claude-{s.get('mode') or 'personal'} --resume {s.get('id')}`",
@@ -342,11 +348,16 @@ def _putback(q, delay, hold_new=False):
 
 
 def card_of(sid):
-    """세션의 카드 번호. 카드 정보는 전송기만 쓰는 cards.json 에 있다 (세션 파일과 동시에 고쳐지지 않게)."""
-    for num, c in cards().items():
-        if sid in (c.get("sids") or [c.get("sid")]):
-            return int(num)
-    return None
+    """세션의 현재 카드 번호: 이 세션에 묶인 카드 중 가장 최근에 열린, 완료되지 않은 것.
+    완료된 카드는 다시 쓰지 않는다 (새 요청은 새 카드). 카드 정보는 전송기만 쓰는 cards.json 에 있다."""
+    mine = [(c.get("bound_t") or c.get("created") or 0, int(n)) for n, c in cards().items()
+            if sid in (c.get("sids") or [c.get("sid")]) and c.get("status") != "완료"]
+    return max(mine)[1] if mine else None
+
+
+def issue_open(num):
+    c = conf()
+    return rest("GET", f"repos/{c['repo']}/issues/{num}").get("state") == "open"
 
 
 def spawn_worker():
@@ -367,11 +378,15 @@ def process(q):
     if not s:
         return None
     num = card_of(sid)
-    if not num and q.get("bind"):
-        num = bind_card(q["bind"], sid, s["project"])
+    if q.get("fresh") and num and not q.get("bind") and not issue_open(num):
+        save_card(num, status="완료")       # 사람이 웹에서 닫은 카드: 새 요청은 새 카드로
+        num = None
+    since = (s.get("requests") or [{}])[-1].get("t")
+    if q.get("bind") and num != q["bind"]:
+        num = bind_card(q["bind"], sid, s["project"], opened_t=since)
     if not num and q.get("create"):
-        num = create_card(s["project"], aiwf.short(q.get("title") or s.get("request") or "작업", 70), render_body(s),
-                          status=q.get("status") or "AI작업중", sid=sid)
+        num = create_card(s["project"], aiwf.short(q.get("title") or s.get("request") or "작업", 70),
+                          render_body(s, since), status=q.get("status") or "AI작업중", sid=sid, opened_t=since)
         q.pop("body", None)
     if not num:
         return None     # 카드가 생길 조건이 아직 안 됨
@@ -387,7 +402,7 @@ def process(q):
         if wait > 0 and not q.get("final"):
             left = {"sid": sid, "body": True, "comments": [], "not_before": time.time() + wait}
         else:
-            update_body(num, render_body(s))
+            update_body(num, render_body(s, cards().get(str(num), {}).get("opened_t")))
     for text in q.get("comments", []):
         comment(num, text)
     if q.get("close"):

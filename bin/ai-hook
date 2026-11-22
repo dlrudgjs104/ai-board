@@ -56,6 +56,14 @@ def review_level(msg):
     return m[-1] if m else None
 
 
+def opening_request(s, card):
+    """현재 카드를 연 요청의 글. 카드가 아직 없으면 지금 요청."""
+    reqs = s.get("requests") or []
+    since = (ghboard.cards().get(str(card), {}) if card else {}).get("opened_t") or 0
+    hit = next((r for r in reqs if r["t"] >= since), None) if since else None
+    return (hit or (reqs[-1] if reqs else {})).get("text") or s.get("request")
+
+
 def brief(s, name, path):
     """세션 시작 때 Claude 에게 넣어 줄 요약."""
     out = [f"[ai-workflow] 프로젝트 '{name}' 의 지금까지 상황 (자동 생성 요약, 원본은 docs/STATUS.md)"]
@@ -139,13 +147,18 @@ def main():
                 notes.append(f"[ai-workflow] 이 세션은 프로젝트 '{name}' ({path}) 작업으로 기록된다. 작업은 이 경로에서 한다.")
         # "#12 진행해줘", "카드 #12" 처럼 보드에 미리 만든 카드를 지정하면 그 카드로 연결
         m = re.match(r"^\s*#(\d{1,6})\b", prompt) or re.search(r"카드\s*#(\d{1,6})", prompt)
-        if board and (card or m):
-            ops = {"bind": int(m.group(1)) if m and not card else None, "status": "AI작업중", "body": True}
+        if board and m:
+            ops = {"bind": int(m.group(1)), "status": "AI작업중", "body": True}
+        elif board and card:
+            # 현재 카드가 열려 있으면 이어 쓰고(검토대기·판단필요 → AI작업중), 완료·닫힘이면 전송기가 새 카드를 만든다
+            ops = {"status": "AI작업중", "body": True}
+            if prompt and not slash:
+                ops.update(create=True, fresh=True)
         elif board and aiwf.is_repo(path) and prompt and not slash:
             # 20초 뒤에도 작업 중이면 카드를 만든다. 그 전에 답이 끝나면 취소 (간단한 질문은 보드에 안 올림)
             ops = {"create": True, "status": "AI작업중", "body": True, "tentative": True, "delay": 20}
         if board and card:
-            notes.append(f"[ai-workflow] 이 세션의 보드 카드: #{card}. 사용자가 확인 완료·완료 처리를 요청하면 `ai-board close {card}` 를 실행한다.")
+            notes.append(f"[ai-workflow] 이 세션의 현재 보드 카드: #{card}. 사용자가 확인 완료·완료 처리를 요청하면 `ai-board close {card}` 를 실행한다.")
         out = "\n".join(notes) or None
 
     elif event == "PreToolUse" and data.get("tool_name") == "AskUserQuestion":
@@ -173,6 +186,7 @@ def main():
                     aiwf.register_project(name, path)
             fp = rel(raw, path)
             s["last_tool"] = f"수정 {fp}"
+            s["file_t"] = dict(list({**(s.get("file_t") or {}), fp: aiwf.now()}.items())[-200:])
             for key in ("files", "turn_files"):
                 lst = s.get(key) or []
                 if fp not in lst:
@@ -188,6 +202,7 @@ def main():
                 c = git(path, "log", "-1", "--format=%h %s")
                 if c and c not in (s.get("commits") or []):
                     s["commits"] = (s.get("commits") or [])[-49:] + [c]
+                    s["commit_t"] = {**(s.get("commit_t") or {}), c: aiwf.now()}
                     s["turn_commits"] = s.get("turn_commits", 0) + 1
                     s["pushed_commits"] = (s.get("pushed_commits") or []) + [c.split(" ", 1)[-1]]
                     detail, event = "커밋 " + c, "Commit"
@@ -246,7 +261,7 @@ def main():
         pushed_now = bool(s.get("pushed"))
         if board and s.get("pushed") and not s.get("renamed"):
             # AI가 제목을 안 바꿨으면 '첫 요청 > 이번에 푸시한 커밋' 으로 바꾼다
-            first = (s.get("requests") or [{}])[0].get("text") or s.get("request") or "작업"
+            first = opening_request(s, card) or "작업"
             done = " · ".join(dict.fromkeys(s.get("pushed_commits") or [])) or "푸시함"
             ghboard.enqueue(sid, rename=f"{aiwf.short(first, 40)} > {aiwf.short(done, 60)}")
             s["renamed"] = True
@@ -275,7 +290,7 @@ def main():
     aiwf.save_json(f, s)
     aiwf.append_event({"t": s["last_activity"], "sid": sid, "project": name, "path": path, "event": event, "detail": detail})
     if ops:
-        first = (s.get("requests") or [{}])[0].get("text") or s.get("request")
+        first = s.get("request")        # 카드가 새로 만들어질 때의 제목: 지금 요청
         ghboard.enqueue(sid, title=first, **ops)
         ghboard.spawn_worker()
     if out:
