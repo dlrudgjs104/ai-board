@@ -14,7 +14,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 BIN_DIR="${AI_WORKFLOW_BIN:-$HOME/.local/bin}"
-CMDS=(claude-personal claude-work claude-lite ai-status ai-init ai-board)
+CMDS=(claude-personal claude-work claude-lite ai-board)
 
 mode=install; board=ask; yes=0
 for a in "$@"; do
@@ -55,7 +55,7 @@ if [[ $mode == uninstall ]]; then
     l="$BIN_DIR/$c"
     if [[ -L "$l" && "$(readlink -f "$l")" == "$ROOT"/bin/* ]]; then rm "$l"; ok "삭제 $c"; else warn "건너뜀 $c (이 레포의 링크가 아님)"; fi
   done
-  echo; echo "레포 폴더($ROOT)와 각 프로젝트의 docs/STATUS.md 는 그대로 남아 있습니다."
+  echo; echo "레포 폴더($ROOT)와 ~/.ai-workflow 의 기록은 그대로 남아 있습니다."
   exit 0
 fi
 
@@ -194,7 +194,6 @@ if [[ -f "$STATE_DIR/profiles.json" || -f "$STATE_DIR/board.json" ]]; then
     ai-board                     # 기록 보드 열기
     ai-board status              # 연결된 계정·기록 레포·보드 확인
     ai-board init                # 기록 레포·보드를 다시 고르기
-    ai-init ~/myproject          # (선택) 프로젝트에 docs/STATUS.md 만들기. -n 은 미리 보기
   그냥 claude 로 시작한 세션에는 워크플로우가 적용되지 않습니다.
 EOF
 else

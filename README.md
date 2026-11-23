@@ -6,7 +6,7 @@
  ┌ 터미널 1: ~/shop     $ claude-personal ─┐
  ├ 터미널 2: ~/blog     $ claude-personal ─┼─ 훅이 자동 기록 ─▶ 대기열 ─▶ 전송기 1개 ─▶ GitHub Projects "AI Board"
  └ 터미널 3: ~/company  $ claude-work     ─┘                                          Backlog · AI작업중 · 판단필요 · 검토대기 · 완료
-          각 프로젝트 docs/STATUS.md (AI가 갱신) ─▶ 다음 세션 시작 때 자동으로 이어받음
+          요청·답변·진행 과정 전체 ─▶ 기록 레포 records/ (증적용 작업 일지) · 다음 세션 시작 때 카드·최근 세션을 자동으로 이어받음
 ```
 
 | 하고 싶은 것 | 하는 법 |
@@ -15,12 +15,12 @@
 | 진행 상황을 본다 | 보드(`ai-board`)에서 세션마다 카드 하나. 작업이 시작되면 **AI작업중**, 카드 본문에 요청·수정 파일·커밋이 쌓임 |
 | 끝난 걸 안다 | 답변이 끝나면 카드가 **검토대기**로 가고 마지막 답변이 **✅ 작업 보고** 코멘트로 붙음. 결정이 필요하면 **판단필요** + **❓** 코멘트. 휴대폰 GitHub 앱으로 알림 |
 | 확인을 끝낸다 | 이슈를 닫거나 "확인 완료 처리해줘" → **완료**. personal 모드에서 "커밋하고 푸시해줘" 까지 하면 제목이 `요청 요약 > 수정된 내용` 으로 바뀌고 자동으로 **완료** |
-| 다음 날 이어서 한다 | 같은 폴더에서 `claude-personal` → 지난 상황(STATUS 🔴🟡⚪, 이 프로젝트 카드, 최근 세션)이 자동으로 들어감. 같은 세션을 이어 열면(`--resume`) 같은 카드가 이어짐 |
+| 다음 날 이어서 한다 | 같은 폴더에서 `claude-personal` → 지난 상황(이 프로젝트 카드, 최근 세션)이 자동으로 들어감. 같은 세션을 이어 열면(`--resume`) 같은 카드가 이어짐 |
 | 할 일을 미리 적어 둔다 | 보드에서 직접 카드 추가 또는 `ai-board task "할 일"` → 나중에 세션에서 `#12 진행해줘` 하면 그 카드로 연결 |
 | 여러 프로젝트를 동시에 | 터미널마다 다른 프로젝트에서 세션을 켜면 보드 한 곳에 모두 나옴. 프로젝트별 보기는 라벨 필터 탭 |
 
 - **원하는 세션에서만 켜진다.** `claude-personal` / `claude-work` / `claude-lite` 로 시작한 세션에만 규칙과 기록이 적용된다. 그냥 `claude` 는 평소와 같고 `~/.claude` 설정은 건드리지 않는다.
-- **정확하다.** 카드 생성·이동·보고는 Claude Code 훅이 세션 이벤트(작업 시작, 질문, 답변 끝)를 보고 자동으로 한다. AI가 규칙을 잊어도 빠지지 않는다. 파일을 바꾸고 STATUS.md 를 안 고치면 훅이 되돌려 고치게 한다.
+- **정확하다.** 카드 생성·이동·보고는 Claude Code 훅이 세션 이벤트(작업 시작, 질문, 답변 끝)를 보고 자동으로 한다. AI가 규칙을 잊어도 빠지지 않는다. 프로젝트 폴더에는 문서를 만들지 않고, 기록은 기록 레포(카드·일지)에만 쌓인다.
 - **API 한도에 걸리지 않는다.** 모든 세션의 변경은 로컬 대기열에서 합쳐져 전송기 하나가 순서대로 보낸다. 컬럼 이동은 호출 1번, 카드 본문은 1분에 한 번까지. GitHub 가 잠시 막혀도 대기열에 남았다가 보내진다.
 - **간단한 질문 세션은 보드에 안 올라간다.** 파일 수정·커밋·질문·1분 넘는 작업이 있을 때만 카드가 생긴다.
 
@@ -41,11 +41,11 @@ cd ~/ai-workflow
 | 1. 기본 도구 | git, python3, curl, git 사용자 이름·메일 | 없으면 `sudo apt install` |
 | 2. Claude Code | 없으면 공식 설치 스크립트로 설치 | Claude 계정(Pro/Max/Team/Enterprise) 또는 Console API 키. 처음 `claude` 실행 때 로그인 |
 | 3. 명령 등록 | `~/.local/bin` 에 명령 링크, PATH 확인 | 없음 |
-| 4. GitHub 보드 | GitHub CLI 설치·로그인(+`project` 권한), 그 뒤 `ai-board init` 마법사: 계정 선택 → 기록 레포(이름 지정, 있으면 연결·없으면 비공개 생성) → 보드(있으면 재사용·없으면 생성) | GitHub 계정 |
+| 4. GitHub 보드 | GitHub CLI 설치·로그인(+`project` 권한), 그 뒤 `ai-board init` 마법사: 기록 레포(기존 레포 연결, 없으면 work 비공개 생성) → 보드(기존 선택, 없으면 AI Board 생성) | GitHub 계정 |
 
 ```bash
 ./install.sh --board      # 보드 연동까지 바로
-./install.sh --no-board   # 보드 없이 (STATUS.md 와 이어받기만)
+./install.sh --no-board   # 보드 없이 (일지는 로컬에만 남음)
 ./install.sh --check      # 바꾸지 않고 점검만
 ./install.sh --uninstall  # 명령 링크만 제거
 ```
@@ -69,17 +69,19 @@ ai-board status                                 # 연결된 계정·레포·보�
 - **설명서는 `README.md` 로 올라간다** (카드·일지·보드 흐름·명령). 새 레포나 비어 있는 README 는 대체하고, 이 도구가 만든 것은 다시 실행할 때 갱신한다. 직접 쓴 README 는 보존하고 `AI-WORKFLOW.md` 로 올린다 (덮어쓰려면 `--readme`).
 - 프로젝트 레포에는 아무 파일도 만들지 않는다 (설정은 `~/.ai-workflow/profiles.json`).
 
+### 시작 안내
+`claude-personal` / `claude-work` / `claude-lite` 로 새로 시작하면 첫 화면에 안내가 나온다: 처음에 할 일("○○ 프로젝트 파악해줘" → 이어서 요청 → 확인 후 완료 처리), 세션 안에서 쓸 `! ai-board …` 명령 목록, 기록 위치. 보드가 연결되지 않았으면 그 설정 방법도 같이 안내한다. 이어하기(`--resume`)·`/clear` 때는 나오지 않는다.
+
+**프로젝트 폴더가 아닌 곳(홈 등)에서 시작해도 된다.** 요청에 프로젝트 폴더 이름을 넣으면("coinsensor 프로젝트 파악해줘") 시작 폴더 아래 2단계까지의 git 레포에서 찾아 그 프로젝트의 작업으로 카드·일지를 기록하고, Claude 는 그 경로에서 일한다. 한 세션은 처음 정해진 프로젝트 하나로 기록된다.
+
 ### 작업 일지 (증적용 — 요청 · 결정 · 반영 · 진행 과정 · 결과)
 세션마다 일지 md 하나가 자동으로 쌓인다: 요청 원문 → 결정한 사항 → 반영된 사항(수정 파일·커밋) → **진행 과정(AI 가 중간에 한 답변 전체와 도구 호출: 실행한 명령·읽거나 고친 파일)** → 결과 보고(마지막 답변). 요청·답변은 자르지 않고, 내부 생각(thinking)과 도구 결과 원문은 싣지 않는다.
 - 로컬: `~/.ai-workflow/records/<프로젝트>/날짜_시각_세션.md` (보드를 안 써도 항상 남음)
 - 기록 레포: 같은 파일이 `records/<프로젝트>/` 로 올라간다. 파일 이름은 `날짜_시각초_세션ID8자리-임의값.md` 로, 같은 프로젝트의 다른 기능을 여러 세션·여러 PC 에서 동시에 해도 덮어쓰지 않는다 (같은 이름이 다른 세션 것이면 `-2` 를 붙임).
 - 결정 사항은 AI가 답변 끝 보고의 `### 결정 사항` 목록과 AskUserQuestion 답변에서 가져온다. `off`·`skip` 한 요청은 기록되지 않는다.
 
-### 1) 프로젝트 준비 (프로젝트당 1회, 선택)
-```bash
-ai-init ~/myproject       # docs/STATUS.md, docs/decisions/, docs/plans/, CLAUDE.md(없을 때만) 생성
-```
-기존 파일은 덮어쓰지 않는다 (`-n` 은 미리 보기). `CLAUDE.md` 에 실행·테스트 명령과 고위험 영역을 적어 두면 AI가 그 기준으로 일한다.
+### 1) 프로젝트 준비 (선택)
+프로젝트에 따로 만들 파일은 없다. `CLAUDE.md` 에 실행·테스트 명령과 고위험 영역을 적어 두면 AI가 그 기준으로 일한다.
 
 ### 2) 세션 시작
 
@@ -87,7 +89,7 @@ ai-init ~/myproject       # docs/STATUS.md, docs/decisions/, docs/plans/, CLAUDE
 |---|---|---|
 | `claude-personal` | 혼자 하는 프로젝트 | main 직접 작업, 커밋 전 확인, push 는 요청 시 |
 | `claude-work` | 회사·협업 | 브랜치 + PR 까지만, 병합은 사람. 보고에 회사 내부 정보 안 씀 |
-| `claude-lite` | 가볍게 (문서 규약 없이) | 보드·STATUS 를 건드리지 않음 |
+| `claude-lite` | 가볍게 (규칙 주입 없이) | 보드를 건드리지 않음 |
 | `claude-* -d 문서.md` | "이 문서를 먼저 읽고 그대로 해" | 위 규칙 + 지정 문서 |
 | `claude` | 워크플로우 없이 | 평소 그대로 |
 
@@ -98,7 +100,7 @@ ai-init ~/myproject       # docs/STATUS.md, docs/decisions/, docs/plans/, CLAUDE
 
 | 명령 | 효과 |
 |---|---|
-| `ai-board off` | 이 세션의 기록을 끈다. 카드·보고·STATUS 강제·요청 내용 저장이 모두 멈춘다 (일반 claude 처럼) |
+| `ai-board off` | 이 세션의 기록을 끈다. 카드·보고·요청 내용 저장이 모두 멈춘다 (일반 claude 처럼) |
 | `ai-board on` | 다시 켠다 (끄기 전 모드로) |
 | `ai-board skip` | **다음 요청 한 건만** 기록에서 제외하고 자동으로 원래대로. 간단한 질문 하나만 빼고 싶을 때 |
 | `ai-board personal` / `work` | 모드 전환. 바뀐 모드의 규칙이 다음 요청부터 적용되고, 보드에는 **새 카드**가 만들어진다 (완료 조건이 달라서) |
@@ -134,21 +136,19 @@ ai-workflow/
 ├─ install.sh            설치·점검·제거
 ├─ bin/
 │   ├─ claude-personal   모드 런처 (claude-work·claude-lite 는 링크). 규칙 주입 + 훅 연결
-│   ├─ ai-hook           Claude Code 훅: 활동 기록, 보드 작업 대기열에 넣기, 시작 요약 주입, STATUS 갱신 확인
-│   ├─ ai-board          보드 열기·목록·할 일 카드·설정·대기열 전송기, 세션 중 off/on/skip/personal/work
-│   ├─ ai-init           프로젝트 문서 뼈대 생성
-│   └─ ai-status         STATUS.md 들만 빠르게 모아 보기
+│   ├─ ai-hook           Claude Code 훅: 활동 기록, 보드 작업 대기열에 넣기, 시작 요약 주입, 시작 안내
+│   └─ ai-board          보드 열기·목록·할 일 카드·설정·대기열 전송기, 세션 중 off/on/skip/personal/work
 ├─ lib/
-│   ├─ aiwf.py           공용 (기록 저장소, STATUS.md 해석, 연결 정보·실행 모드 상태)
+│   ├─ aiwf.py           공용 (기록 저장소, 연결 정보·실행 모드 상태)
 │   ├─ boardsetup.py     초기 설정 마법사 (계정·기록 레포·보드)
 │   ├─ journal.py        작업 일지 (요청·결정·반영·진행 과정 md 생성, 기록 레포 업로드)
 │   └─ ghboard.py        GitHub 보드 연동 (대기열, 전송기, 카드 생성·이동·보고)
 ├─ rules/                주입되는 규칙 (core·review-gate·board 는 시작 때, personal·work 는 훅이 요청마다. 고치면 다음 세션부터 반영)
-│   ├─ core.md           세션 시작/종료 절차, 완료 조건, 시크릿
+│   ├─ core.md           세션 시작/종료 원칙, 완료 조건, 시크릿
 │   ├─ review-gate.md    위험도(검토 필요도) 분류, 요약 형식
-│   ├─ board.md          보드에 정확히 보이도록 AI가 지킬 것 (보고 형식, 질문으로 끝내기, STATUS 갱신)
+│   ├─ board.md          보드에 정확히 보이도록 AI가 지킬 것 (보고 형식, 질문으로 끝내기)
 │   └─ personal.md · work.md · lite.md
-├─ templates/            STATUS.md, plan.md, adr.md, CLAUDE.project.md, RECORDS_README.md(기록 레포 설명서)
+├─ templates/            plan.md, adr.md, RECORDS_README.md(기록 레포 설명서)
 └─ docs/                 github-setup.md, 배경 분석
 ```
 

@@ -6,10 +6,9 @@
 - GitHub Projects 보드 작업을 대기열에 넣고 전송기를 깨운다 (보드가 설정된 personal/work 세션)
     작업 시작 → 카드 생성·AI작업중 / 질문·권한 승인 → 판단필요 / 답변 끝 → 검토대기 + 보고 코멘트
     카드는 파일 수정·커밋·질문·1분 넘는 작업이 있을 때만 만든다 (간단한 질문 세션은 보드에 안 올림)
-- SessionStart: 이 프로젝트의 STATUS 요약, 열린 카드, 최근 세션, 동시에 실행 중인 세션을 Claude 에게 알려 준다
+- SessionStart: 이 프로젝트의 열린 카드, 최근 세션, 동시에 실행 중인 세션을 Claude 에게 알려 준다
 - 모드: personal / work / off(꺼짐) / skip(다음 요청 한 건만 제외) 를 세션 중에 바꿀 수 있다 (ai-board off|on|personal|work|skip).
-    모드별 규칙(personal.md / work.md)은 요청 때마다 이 훅이 넣어 준다. off 이면 기록·보드·STATUS 강제를 모두 건너뛴다
-- Stop: 파일을 바꿨는데 STATUS.md 를 갱신하지 않았으면 한 번 되돌려 갱신하게 한다 (personal/work)
+    모드별 규칙(personal.md / work.md)은 요청 때마다 이 훅이 넣어 준다. off 이면 기록·보드를 모두 건너뛴다
 훅이 실패해도 Claude 작업은 막지 않는다.
 """
 import json
@@ -28,9 +27,9 @@ import journal  # noqa: E402
 EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 
 
-OFF_NOTE = ("[ai-workflow] 이 세션은 지금 워크플로우가 꺼져 있다 (ai-board on 으로 다시 켠다). STATUS.md·worklog·보드·보고 형식 규칙을 "
+OFF_NOTE = ("[ai-workflow] 이 세션은 지금 워크플로우가 꺼져 있다 (ai-board on 으로 다시 켠다). 보드·보고 형식 규칙을 "
             "적용하지 않고 일반 claude 처럼 작업한다. 시크릿 금지와 되돌리기 어려운 작업의 사전 확인은 유지한다.")
-SKIP_NOTE = ("[ai-workflow] 이번 요청 한 건은 기록에서 제외된다(skip). STATUS.md·worklog 갱신과 보드 보고 형식을 적용하지 않는다. "
+SKIP_NOTE = ("[ai-workflow] 이번 요청 한 건은 기록에서 제외된다(skip). 보드 보고 형식을 적용하지 않는다. "
              "다음 요청부터 원래 모드로 돌아간다. 시크릿 금지와 위험 작업의 사전 확인은 유지한다.")
 
 
@@ -119,20 +118,7 @@ def remote_note(path):
 
 def brief(s, name, path):
     """세션 시작 때 Claude 에게 넣어 줄 요약."""
-    out = [f"[ai-workflow] 프로젝트 '{name}' 의 지금까지 상황 (자동 생성 요약, 원본은 docs/STATUS.md)"]
-    st = aiwf.parse_status(aiwf.status_path(path))
-    if st:
-        out.append(f"STATUS 최종 갱신: {st['updated'] or '알 수 없음'}")
-        for e, label in aiwf.SECTIONS:
-            items = st["sections"][e]
-            if e == "🟢" or not items:
-                continue
-            out.append(f"{e} {label} ({len(items)})")
-            out += [f"  - {aiwf.short(it['text'], 180)}" for it in items[:8]]
-            if len(items) > 8:
-                out.append(f"  - … 외 {len(items) - 8}개 (STATUS.md 참고)")
-    else:
-        out.append("docs/STATUS.md 없음 (ai-init 으로 만들 수 있다)")
+    out = [f"[ai-workflow] 프로젝트 '{name}' 의 지금까지 상황 (자동 생성 요약)"]
     if ghboard.configured():
         mine = sorted(((int(n), c) for n, c in ghboard.cards().items()
                        if c.get("project") == name and c.get("status") not in ("완료", None)), reverse=True)[:10]
@@ -152,6 +138,38 @@ def brief(s, name, path):
         out += [f"  - {hm(x.get('last_activity'))} 요청: {aiwf.short(x.get('request'), 100)} → "
                 f"{aiwf.short(x.get('summary') or '(요약 없음)', 160)}" for x in done]
     return "\n".join(out)
+
+
+def guide(mode, name, path):
+    """세션을 새로 시작했을 때 사용자 화면에 보여 줄 시작 안내 (명령어 + 처음에 할 일)."""
+    label = {"personal": "personal · main 직접 작업, 커밋 전에 묻기", "work": "work · 브랜치 + PR, 병합은 사람", "lite": "lite · 지정 문서만"}[mode]
+    L = [f"━━ ai-workflow 시작 안내  [{label}] ━━", "", (f"프로젝트: {name}" if aiwf.is_repo(path) else f"시작 폴더: {path} (프로젝트는 요청에서 정해집니다)"), ""]
+    if mode != "lite":
+        board = ghboard.configured()
+        if aiwf.is_repo(path):
+            first = f'  1. "{name} 프로젝트 파악해줘" 처럼 요청하면 구조·최근 작업을 읽고 현황을 정리합니다.'
+        else:
+            first = ('  1. 여기는 프로젝트 폴더가 아니라서, 작업할 프로젝트의 폴더 이름을 넣어 요청하세요. 예: "coinsensor 프로젝트 파악해줘"\n'
+                     '     (이 폴더 아래의 프로젝트를 찾아 그 프로젝트의 작업으로 기록하고, 구조·최근 작업을 정리합니다)')
+        L += ["▶ 처음에는 이렇게 시작하세요", first,
+              "  2. 이어서 할 일을 요청합니다. 20초 넘게 걸리는 작업은 보드에 카드가 생기고 진행됩니다.",
+              "  3. 끝나면 보고를 확인하고, 이상 없으면 카드를 완료 처리하세요. (\"확인 완료\" 라고 말하면 닫습니다)"]
+        if not board:
+            L.append("  ※ GitHub 보드가 아직 연결되지 않았습니다. 기록·보드를 쓰려면 터미널에서: ai-board init")
+        L += ["", "▶ 이 세션에서 쓸 수 있는 명령 (앞에 ! 를 붙여 실행)",
+              "  ! ai-board            보드를 브라우저로 열기       ! ai-board list     현재 세션·카드 현황",
+              '  ! ai-board task "할 일"  나중에 할 일을 Backlog 카드로 등록 (#번호 진행해줘 로 시작)',
+              "  ! ai-board close 번호  확인 끝난 카드를 완료로 닫기   ! ai-board status   연결·대기열 점검",
+              "  ! ai-board off / on   이 세션 기록 끄기·켜기       ! ai-board skip     다음 요청 한 건만 기록 제외",
+              "  ! ai-board personal | work   세션 중 모드 전환 (바뀌면 새 카드)   ! ai-board now   현재 모드",
+              "", "▶ 기록 위치",
+              "  · 요청·답변·진행 과정 전체: 작업 일지 (기록 레포 records/ + ~/.ai-workflow/records/)",
+              "  · 요청별 진행 상황: GitHub 보드(AI Board)의 카드. 사람 판단이 필요하면 판단필요로 이동합니다."]
+    else:
+        L += ["지정한 문서만 읽고 작업합니다. 기록·보드 규칙은 적용되지 않습니다.",
+              "  ! ai-board off / on   (lite 에서는 켜기·끄기만 가능)"]
+    L += ["", "※ 이 안내는 새로 시작할 때만 나옵니다. 그냥 claude 로 시작한 세션에는 워크플로우가 적용되지 않습니다."]
+    return "\n".join(L)
 
 
 def main():
@@ -180,7 +198,7 @@ def main():
         aiwf.save_run_state(rs)
     mode = aiwf.effective_mode(rs)
     if mode == "off":
-        # 기록·보드·STATUS 강제를 모두 건너뛴다. 요청 내용도 저장하지 않는다
+        # 기록·보드 규칙을 모두 건너뛴다. 요청 내용도 저장하지 않는다
         skipping = rs.get("skip") == "active"
         if event == "UserPromptSubmit" and (skipping or rs.get("injected") != "off"):
             if not skipping:
@@ -243,7 +261,7 @@ def main():
             notes.append(ctx)
         if not aiwf.is_repo(path) and not card and prompt:
             # 홈처럼 레포가 아닌 곳에서 시작한 세션: 요청에 적힌 프로젝트 이름으로 기록한다 ("coinsensor 프로젝트에서 …")
-            hit = aiwf.project_in_text(prompt)
+            hit = aiwf.project_in_text(prompt, cwd)
             if hit:
                 s["project"], s["path"] = name, path = hit
                 s["profile"] = aiwf.resolve_profile(path)
@@ -306,9 +324,8 @@ def main():
                     lst.append(fp)
                 s[key] = lst[-200:]
             detail = s["last_tool"]
-            if not fp.endswith("docs/STATUS.md"):
-                journal.add_file(s, fp)
-            if board and not fp.endswith("docs/STATUS.md"):
+            journal.add_file(s, fp)
+            if board:
                 ops = {"body": True} if card else {"create": True, "status": "AI작업중", "body": True}
         elif tool == "Bash":
             cmd = ti.get("command", "")
@@ -360,17 +377,6 @@ def main():
     elif event == "Stop":
         msg = data.get("last_assistant_message") or ""
         s["summary"] = aiwf.short_lines(msg, 3000)
-        changed = [x for x in (s.get("turn_files") or []) if not x.endswith("docs/STATUS.md")]
-        sp = aiwf.status_path(path)
-        # 정확성 장치: 파일을 바꿨는데 STATUS.md 를 갱신하지 않았으면 한 번 되돌려 갱신하게 한다
-        if (mode in ("personal", "work") and changed and sp.exists() and not data.get("stop_hook_active")
-                and sp.stat().st_mtime < s.get("turn_started", 0)):
-            aiwf.save_json(f, {**s, "last_activity": aiwf.now()})
-            print(json.dumps({"decision": "block", "reason":
-                              "이번 요청에서 파일을 바꿨는데 docs/STATUS.md 가 갱신되지 않았습니다. "
-                              "규칙대로 STATUS.md 를 갱신(진행 중/완료/판단 필요/다음 예정, 최종 갱신 시각)한 뒤 마무리하세요."},
-                             ensure_ascii=False))
-            return 0
         if mode != "lite":
             journal.finish_turn(s, msg, data.get("transcript_path"))
             journal.write_local(s)
@@ -423,7 +429,12 @@ def main():
         ghboard.enqueue(sid, title=first, **ops)
         ghboard.spawn_worker()
     if out:
-        print(out)
+        if event == "SessionStart" and data.get("source") == "startup":
+            # 사용자 화면에 시작 안내(systemMessage), Claude 에게는 현황 요약(additionalContext)
+            print(json.dumps({"systemMessage": guide(mode, name, path),
+                              "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": out}}, ensure_ascii=False))
+        else:
+            print(out)
     if out_ctx:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": out_ctx}}, ensure_ascii=False))
     return 0

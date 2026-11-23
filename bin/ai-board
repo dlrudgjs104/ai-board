@@ -14,7 +14,7 @@
   ai-board archive [--days 14]    완료 후 며칠 지난 카드를 보드에서 보관 (하루 한 번 자동으로도 함)
 
 세션 중 전환 (claude-personal/work/lite 로 시작한 세션 안에서, 앞에 ! 를 붙여 실행: ! ai-board off):
-  ai-board off        이 세션의 기록을 끈다 (보드·STATUS·보고 규칙 모두. 일반 claude 처럼)
+  ai-board off        이 세션의 기록을 끈다 (보드·보고 규칙 모두. 일반 claude 처럼)
   ai-board on         다시 켠다 (끄기 전 모드로)
   ai-board personal   personal 로 전환      ai-board work   work 로 전환 (모드가 바뀌면 새 카드)
   ai-board skip       다음 요청 한 건만 기록에서 제외하고 자동으로 원래대로
@@ -262,7 +262,7 @@ def need_run():
 
 def describe(rs):
     mode = rs.get("mode") or aiwf.launch_mode()
-    base = {"off": "꺼짐 (기록·보드·STATUS 규칙 없음)", "personal": "personal (main 직접, 커밋 전 묻기)",
+    base = {"off": "꺼짐 (기록·보드 규칙 없음)", "personal": "personal (main 직접, 커밋 전 묻기)",
             "work": "work (브랜치 + PR)", "lite": "lite (지정 문서만)"}[mode]
     extra = {"next": " · 다음 요청 한 건은 기록 제외", "active": " · 지금 요청은 기록 제외 중"}.get(rs.get("skip"), "")
     return f"현재: {base}{extra}"

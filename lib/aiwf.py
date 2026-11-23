@@ -1,4 +1,4 @@
-"""ai-workflow 공용 모듈: 경로, 프로젝트 식별, STATUS.md 해석, 세션 상태 저장소.
+"""ai-workflow 공용 모듈: 경로, 프로젝트 식별, 세션 상태 저장소.
 
 상태 저장소(기본 ~/.ai-workflow, AI_WORKFLOW_STATE 로 변경 가능)
   sessions/<세션ID>.json   세션별 현재 상태 (훅이 갱신, 대시보드가 읽음)
@@ -22,8 +22,6 @@ EVENTS = STATE / "events.jsonl"
 PROJECTS = STATE / "projects.json"
 PROFILES = STATE / "profiles.json"   # 연결 정보: GitHub 계정·기록 레포·보드
 RUNS = STATE / "runs"       # 런처 실행 하나(= claude 프로세스 하나)마다 상태 파일: 모드 전환·끄기·건너뛰기
-
-SECTIONS = [("🔴", "판단 필요"), ("🟡", "진행 중"), ("🟢", "완료 · 검토 대기"), ("⚪", "예정")]
 
 
 def now() -> float:
@@ -99,18 +97,49 @@ def project_of(cwd: str):
     return os.environ.get("AI_PROJECT") or Path(path).name, path
 
 
-def project_in_text(text: str):
-    """요청 글에 알려진 프로젝트 이름이 있으면 (이름, 경로). 여러 개면 가장 먼저 나온 것."""
+def _child_repos(base: str, depth: int = 2):
+    """base 아래 depth 단계까지의 git 레포 폴더 (숨김·node_modules 등은 건너뜀). 레포 안으로는 더 들어가지 않는다."""
+    out = []
+    skip = {"node_modules", "venv", ".venv", "__pycache__", "build", "dist", "target"}
+    def walk(d, left):
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            return
+        for n in names:
+            if n.startswith(".") or n in skip:
+                continue
+            p = os.path.join(d, n)
+            if not os.path.isdir(p):
+                continue
+            if os.path.exists(os.path.join(p, ".git")):
+                out.append((n, p))
+            elif left > 1:
+                walk(p, left - 1)
+    walk(base, depth)
+    return out
+
+
+def project_in_text(text: str, base: str = None):
+    """요청 글에 프로젝트 이름이 있으면 (이름, 경로). 이미 알려진 프로젝트 → base(시작 폴더) 아래의 git 레포 순으로 찾고,
+    여러 개면 가장 먼저 나온 것. 처음 보는 프로젝트(폴더 이름만 말한 경우)도 base 아래에 있으면 찾아서 등록한다."""
     low = text.lower()
     best = None
-    for p in load_json(PROJECTS, {}).values():
-        n = (p.get("name") or "").lower()
-        if len(n) < 3 or not is_repo(p["path"]):
+    cands = [(p.get("name") or "", p["path"]) for p in load_json(PROJECTS, {}).values() if is_repo(p["path"])]
+    if base:
+        known = {path for _, path in cands}
+        cands += [(n, p) for n, p in _child_repos(base) if p not in known]
+    for name, path in cands:
+        n = name.lower()
+        if len(n) < 3:
             continue
         m = re.search(r"(?<![a-z0-9_-])" + re.escape(n) + r"(?![a-z0-9_-])", low)   # 뒤에 붙는 조사(랑, 에서)는 허용
         if m and (best is None or m.start() < best[0]):
-            best = (m.start(), p["name"], p["path"])
-    return (best[1], best[2]) if best else None
+            best = (m.start(), name, path)
+    if best:
+        register_project(best[1], best[2])
+        return best[1], best[2]
+    return None
 
 
 def register_project(name: str, path: str):
@@ -119,38 +148,6 @@ def register_project(name: str, path: str):
     p.update({"name": name, "path": path, "seen": now()})
     projects[path] = p
     save_json(PROJECTS, projects)
-
-
-def status_path(project_path: str) -> Path:
-    return Path(project_path) / "docs" / "STATUS.md"
-
-
-# ---------------------------------------------------------------- STATUS.md
-def parse_status(path: Path):
-    """STATUS.md → {updated, sections: {이모지: [{text, sub: [...]}]}}. 없으면 None."""
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    m = re.search(r"^최종 갱신:\s*(.+)$", text, re.M)
-    sections = {e: [] for e, _ in SECTIONS}
-    cur = None
-    for line in text.splitlines():
-        h = re.match(r"^##\s+(\S+)", line)
-        if h:
-            cur = h.group(1) if h.group(1) in sections else None
-            continue
-        if not cur:
-            continue
-        top = re.match(r"^-\s+(\[[ xX]\]\s*)?(.*)$", line)
-        sub = re.match(r"^\s{2,}-\s+(.*)$", line)
-        if top:
-            item = top.group(2).strip()
-            if item and item != "(없음)":
-                sections[cur].append({"text": item, "sub": []})
-        elif sub and sections[cur]:
-            sections[cur][-1]["sub"].append(sub.group(1).strip())
-    return {"updated": m.group(1).strip() if m else None, "sections": sections, "mtime": path.stat().st_mtime}
 
 
 # ---------------------------------------------------------------- 세션
