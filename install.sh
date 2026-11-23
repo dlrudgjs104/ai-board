@@ -47,8 +47,8 @@ ask()  { # ask "질문" → 0(예)/1(아니오)
   [[ $yes == 1 ]] && return 0
   [[ -t 0 ]] || return 1
   local r
-  while true; do   # y/n 이외의 입력은 다시 묻는다 (엔터는 기본값 N)
-    read -r -p "  ? $1 [y/N] " r || return 1      # 입력이 끊기면(EOF) 아니오
+  while true; do   # y/n 이외의 입력은 다시 묻는다 (엔터는 기본값 n)
+    read -r -p "  ? $1 [y/n, 기본: n] " r || return 1      # 입력이 끊기면(EOF) 아니오
     case "${r,,}" in
       y|yes|예|네) return 0 ;;
       ""|n|no|아니오|아니) return 1 ;;

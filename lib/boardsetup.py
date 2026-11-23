@@ -54,7 +54,7 @@ def ask(opts, prompt, default=None, valid=None, hint=""):
         return default
     while True:
         try:
-            s = input(f"  ? {prompt}" + (f" [{default}]" if default else "") + ": ").strip()
+            s = input(f"  ? {prompt}" + (f" [기본: {default}]" if default else "") + ": ").strip()
         except EOFError:
             return default
         s = s or default
@@ -69,7 +69,7 @@ def confirm(opts, prompt, default=True):
         return default if opts.get("yes") else False
     while True:
         try:
-            s = input(f"  ? {prompt} [{'Y/n' if default else 'y/N'}] ").strip().lower()
+            s = input(f"  ? {prompt} [y/n, 기본: {'y' if default else 'n'}] ").strip().lower()
         except EOFError:
             return default
         if not s:
@@ -268,7 +268,7 @@ def run_init(opts: dict) -> str:
         head("기록 레포")
         note("작업 카드(이슈)와 일지가 쌓이는 비공개 레포입니다.")
         note(f"기존 레포를 쓰려면 이름을 입력하고, 엔터를 누르면 '{DEFAULT_REPO}' 를 사용합니다 (없으면 새로 만듦).")
-        repo = ask(opts, "레포 이름", "") or DEFAULT_REPO
+        repo = ask(opts, "레포 이름", DEFAULT_REPO)
     repo = repo if "/" in repo else f"{login}/{repo}"
     owner, rname = repo.split("/", 1)
     try:
