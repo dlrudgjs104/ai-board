@@ -7,13 +7,9 @@
   ai-board on         다시 켠다
   (claude-personal / claude-work / claude-lite 로 시작한 세션 안에서는 앞에 ! 를 붙여 실행: ! ai-board off)
 
-설정 (설치 때 install.sh 가 호출하며, 직접 다시 고를 때도 쓴다):
-  ai-board init [--repo 이름] [--board 번호|--board-title 제목] [-y]
-                      기록 레포(기존 레포 연결, 없으면 work 비공개 생성) → 보드(기존 선택, 없으면 AI Board 생성)
-
 카드는 claude-personal / claude-work 세션에서 훅이 자동으로 만들고 옮긴다 (전송기가 백그라운드에서 GitHub 로 보냄):
   작업 시작 → AI작업중 · 질문/권한 승인 → 판단필요 · 답변 끝 → 검토대기(+보고 코멘트) · 이슈 닫기 → 완료
-카드 확인·완료·할 일 추가는 보드(웹)에서 한다.
+카드 확인·완료·할 일 추가는 보드(웹)에서 한다. 계정·레포·보드 설정은 install.sh 로 한다 (다시 연결: ./install.sh --reconnect).
 """
 import argparse
 import shutil
@@ -35,7 +31,7 @@ def die(msg):
 
 def need_board():
     if not ghboard.configured():
-        die("연결된 보드가 없습니다. 먼저: ai-board init")
+        die(f"연결된 보드가 없습니다. 먼저: {aiwf.ROOT}/install.sh --board")
 
 
 def pick():
@@ -75,34 +71,6 @@ def cmd_open(_):
         print("브라우저를 자동으로 열지 못했습니다. 위 주소를 여세요.")
 
 
-def cmd_init(a):
-    import boardsetup
-    try:
-        boardsetup.run_init({"repo": a.repo, "create_repo": a.create_repo, "board": a.board, "board_title": a.board_title,
-                             "reset_columns": a.reset_columns, "yes": a.yes, "readme": a.readme})
-    except GitHubError as e:
-        die(f"설정 중 GitHub 오류: {e}")
-
-
-def cmd_check(_):
-    """기록 레포가 GitHub 에 실제로 있는지 본다 (install.sh 가 호출). 출력: 'OK|MISSING|UNKNOWN <계정> <레포>'"""
-    d = aiwf.profiles_conf()["profiles"]
-    if not d:
-        print("MISSING  (설정 없음) → ai-board init")
-        sys.exit(1)
-    name, p = next(iter(d.items()))
-    ghboard.use(name)
-    try:
-        ghboard.rest("GET", f"repos/{p.get('repo')}")
-        print(f"OK       {p.get('login')} {p.get('repo')}")
-    except GitHubError as e:
-        if "Not Found" in str(e) or "404" in str(e):
-            print(f"MISSING  {p.get('login')} {p.get('repo')}")
-            sys.exit(1)
-        print(f"UNKNOWN  {p.get('login')} {p.get('repo')}  ({str(e)[:80]})")
-        sys.exit(2)
-
-
 def cmd_status(_):
     print(f"기록 저장소 : {aiwf.STATE}")
     accs = []
@@ -114,7 +82,7 @@ def cmd_status(_):
         print(f"GitHub 계정 : {', '.join(accs) or '로그인 안 됨 → gh auth login -s project'}")
     d = aiwf.profiles_conf()
     if not d["profiles"]:
-        print("연결        : 없음 → ai-board init")
+        print(f"연결        : 없음 → {aiwf.ROOT}/install.sh --board")
     for n, p in d["profiles"].items():
         ghboard.use(n)
         c = ghboard.conf()
@@ -155,21 +123,10 @@ def cmd_switch(a):
 def main():
     ap = argparse.ArgumentParser(prog="ai-board", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd")
-    for c in ("status", "off", "on", "check"):
+    for c in ("status", "off", "on"):
         sub.add_parser(c)
-    sub.add_parser("worker")       # 전송기: 훅이 필요할 때 자동으로 띄운다 (직접 쓸 일 없음)
-    ini = sub.add_parser("init", help="초기 설정: 계정 → 기록 레포 → 보드")
-    ini.add_argument("--repo", help="기록 레포 (이름 또는 owner/이름). 있으면 연결, 없으면 비공개 생성 (기본 work)")
-    ini.add_argument("--create-repo", action="store_true"); ini.add_argument("--board", type=int, help="기존 보드 번호")
-    ini.add_argument("--board-title", help="보드 이름 (같은 이름이 있으면 재사용, 없으면 새로 만듦)")
-    ini.add_argument("--reset-columns", action="store_true"); ini.add_argument("--yes", "-y", action="store_true", help="묻지 않고 기본값")
-    ini.add_argument("--readme", action="store_true", help="레포 설명서를 최신으로 덮어쓰기")
     a = ap.parse_args()
-    if a.cmd == "worker":
-        ghboard.worker()
-    else:
-        {None: cmd_open, "status": cmd_status, "off": cmd_switch, "on": cmd_switch,
-         "init": cmd_init, "check": cmd_check}[a.cmd](a)
+    {None: cmd_open, "status": cmd_status, "off": cmd_switch, "on": cmd_switch}[a.cmd](a)
 
 
 if __name__ == "__main__":

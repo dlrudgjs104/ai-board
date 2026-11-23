@@ -16,8 +16,8 @@ claude-personal / claude-work 세션 ─ 훅 ─▶ 로컬 대기열 ─▶ 전�
 | GitHub 계정 | 보드·기록 레포가 GitHub 에 있다 | https://github.com/signup |
 | GitHub CLI 로그인 | 카드 생성·이동·코멘트 | `gh auth login -s project` → `gh auth status` |
 | `project` 권한 | Projects 보드 읽기·쓰기. 기본 로그인에는 없다 | `gh auth status` 의 Token scopes 에 `'project'`. 없으면 `gh auth refresh -h github.com -s project` |
-| 기록 레포 (비공개) | 카드(이슈)가 모이는 곳 | `ai-board init` 이 만든다. 직접 만들려면 GitHub 웹 → New repository → **Private** |
-| (팀 공용) 쓰기 권한 | 여러 사람이 한 보드를 쓸 때 | 레포 소유자가 Settings → Collaborators, 보드 Settings → Manage access 에 추가 → `ai-board setup <owner>/<repo> --board <번호>` |
+| 기록 레포 (비공개) | 카드(이슈)가 모이는 곳 | 설치 마법사(`./install.sh --board`)가 만든다. 직접 만들려면 GitHub 웹 → New repository → **Private** |
+| (팀 공용) 쓰기 권한 | 여러 사람이 한 보드를 쓸 때 | 레포 소유자가 Settings → Collaborators, 보드 Settings → Manage access 에 추가 → `python3 lib/boardsetup.py --repo <owner>/<repo> --board <번호>` |
 
 토큰은 GitHub CLI 가 `~/.config/gh` 에 보관한다. 이 레포에는 저장되지 않는다.
 
@@ -40,12 +40,13 @@ gh auth status               # Token scopes 에 'project' 확인
 ## 3. 기록 레포 + 보드
 계정은 로그인한 GitHub 계정 하나만 쓴다. 카드(이슈)와 작업 일지(`records/`)가 기록 레포에 쌓이고, 카드는 보드 하나에 모인다.
 ```bash
-ai-board init                                 # 마법사: 기록 레포(기존 레포 이름, 엔터면 work 사용·생성) → 보드(번호로 선택, 엔터면 AI Board 사용·생성)
-ai-board init --repo ai-log --board-title "내 보드"          # 이름 지정. 레포·보드가 이미 있으면 연결, 없으면 만듦
-ai-board init --board 3 --repo owner/repo     # 이미 있는 보드(팀 보드 등)를 번호로 연결
+./install.sh --board                          # 마법사: 기록 레포(기존 레포 이름, 엔터면 work 사용·생성) → 보드(번호로 선택, 엔터면 AI Board 사용·생성)
+./install.sh --reconnect                      # 이미 연결돼 있어도 다시 고르기
+python3 lib/boardsetup.py --repo ai-log --board-title "내 보드"   # 이름 지정. 레포·보드가 이미 있으면 연결, 없으면 만듦
+python3 lib/boardsetup.py --board 3 --repo owner/repo          # 이미 있는 보드(팀 보드 등)를 번호로 연결
 ai-board status                               # 로그인·레포·보드·대기열·최근 오류
 ```
-다른 GitHub 계정으로 바꾸려면 `gh auth login -h github.com -s project`(또는 `gh auth switch`)로 그 계정을 활성화한 뒤 `ai-board init` 을 다시 실행한다. 프로젝트 레포에는 아무 파일도 생기지 않는다.
+다른 GitHub 계정으로 바꾸려면 `gh auth login -h github.com -s project`(또는 `gh auth switch`)로 그 계정을 활성화한 뒤 `./install.sh --reconnect` 를 실행한다. 프로젝트 레포에는 아무 파일도 생기지 않는다.
 
 설명서는 레포 첫 화면에 보이도록 `README.md` 로 올라간다. 새 레포나 비어 있는 README 는 대체하고, 직접 쓴 README 가 있으면 건드리지 않고 `AI-WORKFLOW.md` 로 올린다.
 

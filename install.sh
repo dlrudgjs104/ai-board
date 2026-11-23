@@ -3,6 +3,7 @@
 #
 #   ./install.sh              명령 설치 + 필요한 것 점검. GitHub 보드 연동은 물어본 뒤 진행
 #   ./install.sh --board      GitHub 보드 연동까지 바로 진행 (gh 설치, 로그인, 권한, 보드 생성/연결)
+#   ./install.sh --reconnect  이미 연결돼 있어도 기록 레포·보드를 다시 고름 (계정을 바꿨을 때 등)
 #   ./install.sh --no-board   보드 연동은 묻지 않고 건너뜀
 #   ./install.sh --check      아무것도 바꾸지 않고 상태만 점검
 #   ./install.sh --uninstall  ~/.local/bin 에 만든 링크 제거 (레포와 프로젝트 문서는 그대로)
@@ -16,15 +17,16 @@ ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 BIN_DIR="${AI_WORKFLOW_BIN:-$HOME/.local/bin}"
 CMDS=(claude-personal claude-work claude-lite ai-board)
 
-mode=install; board=ask; yes=0
+mode=install; board=ask; yes=0; reconnect=0
 for a in "$@"; do
   case "$a" in
     --board) board=yes ;;
+    --reconnect) board=yes; reconnect=1 ;;
     --no-board) board=no ;;
     --check) mode=check ;;
     --uninstall) mode=uninstall ;;
     -y|--yes) yes=1 ;;
-    -h|--help) sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "알 수 없는 옵션: $a (도움말: ./install.sh -h)" >&2; exit 2 ;;
   esac
 done
@@ -149,28 +151,28 @@ if [[ $mode == check || $board == yes ]]; then
         fi
       fi
       gh auth status 2>&1 | grep -q "'project'" && ok "project 권한" || bad "project 권한 없음 → gh auth refresh -h github.com -s project"
-      if [[ -f "${AI_WORKFLOW_STATE:-$HOME/.ai-workflow}/profiles.json" || -f "${AI_WORKFLOW_STATE:-$HOME/.ai-workflow}/board.json" ]]; then
+      if [[ $reconnect == 0 ]] && [[ -f "${AI_WORKFLOW_STATE:-$HOME/.ai-workflow}/profiles.json" || -f "${AI_WORKFLOW_STATE:-$HOME/.ai-workflow}/board.json" ]]; then
         # 파일만 남고 GitHub 의 기록 레포가 지워진 경우(재설치 때 흔함)를 잡아서 다시 만든다
-        chk="$("$ROOT/bin/ai-board" check 2>/dev/null || true)"   # 레포가 없으면 종료코드 1 → set -e 로 멈추지 않게
+        chk="$(python3 "$ROOT/lib/boardsetup.py" check 2>/dev/null || true)"   # 레포가 없으면 종료코드 1 → set -e 로 멈추지 않게
         if grep -q '^OK' <<<"$chk"; then
-          ok "연결됨: $(awk '{print $2" · "$3}' <<<"$chk")  (확인: ai-board status, 다시 고르기: ai-board init)"
+          ok "연결됨: $(awk '{print $2" · "$3}' <<<"$chk")  (확인: ai-board status, 다시 고르기: ./install.sh --reconnect)"
         elif grep -q '^MISSING' <<<"$chk"; then
           warn "기록 레포가 GitHub 에 없습니다 ($(awk '{print $3}' <<<"$chk"))."
           if [[ $mode == install ]] && { [[ $yes == 1 || ! -t 0 ]] || ask "다시 설정할까요? (기존 레포를 고르거나 work 비공개 레포 생성, 보드는 있으면 재사용)"; }; then
-            if [[ $yes == 1 || ! -t 0 ]]; then "$ROOT/bin/ai-board" init -y --create-repo || warn "설정 실패 → ai-board init"
-            else "$ROOT/bin/ai-board" init || warn "설정을 마치지 못했습니다 → ai-board init"; fi
+            if [[ $yes == 1 || ! -t 0 ]]; then python3 "$ROOT/lib/boardsetup.py" -y --create-repo || warn "설정 실패 → ./install.sh --reconnect"
+            else python3 "$ROOT/lib/boardsetup.py" || warn "설정을 마치지 못했습니다 → ./install.sh --reconnect"; fi
           else
-            warn "나중에: ai-board init"
+            warn "나중에: ./install.sh --reconnect"
           fi
         else
           warn "기록 레포를 확인하지 못했습니다 (네트워크·권한?) → ai-board status"
         fi
       elif [[ $mode == install ]] && gh auth status 2>&1 | grep -q "'project'"; then
         # 기록 레포(기존 레포 연결, 없으면 work 비공개 생성) → 보드(기존 선택, 없으면 AI Board 생성) 를 물으며 설정한다
-        if [[ $yes == 1 || ! -t 0 ]]; then "$ROOT/bin/ai-board" init -y --create-repo || warn "설정 실패 → ai-board init"
-        else "$ROOT/bin/ai-board" init || warn "설정을 마치지 못했습니다 → ai-board init"; fi
+        if [[ $yes == 1 || ! -t 0 ]]; then python3 "$ROOT/lib/boardsetup.py" -y --create-repo || warn "설정 실패 → ./install.sh --reconnect"
+        else python3 "$ROOT/lib/boardsetup.py" || warn "설정을 마치지 못했습니다 → ./install.sh --reconnect"; fi
       else
-        warn "기록 레포·보드 미설정 → ai-board init"
+        warn "기록 레포·보드 미설정 → ./install.sh --board"
       fi
     fi
   fi
@@ -193,7 +195,7 @@ if [[ -f "$STATE_DIR/profiles.json" || -f "$STATE_DIR/board.json" ]]; then
   [필요할 때] 터미널에서
     ai-board                     # 기록 보드 열기
     ai-board status              # 연결된 계정·기록 레포·보드 확인
-    ai-board init                # 기록 레포·보드를 다시 고르기
+    ./install.sh --reconnect     # 기록 레포·보드를 다시 고르기 (이 레포 폴더에서)
   그냥 claude 로 시작한 세션에는 워크플로우가 적용되지 않습니다.
 EOF
 else
@@ -202,7 +204,7 @@ else
 
   [1회] 계정 연결과 기록 레포·보드 설정
     gh auth login -s project     # GitHub 로그인 (아직 안 했다면)
-    ai-board init                # 기록 레포(기존 것 또는 work 생성) → 보드(기존 것 또는 AI Board 생성). 질문에 답하면 끝
+    ./install.sh --board         # 기록 레포(기존 것 또는 work 생성) → 보드(기존 것 또는 AI Board 생성). 질문에 답하면 끝
 
   [매번] 설정 후에는 프로젝트 폴더에서 시작
     cd ~/myproject

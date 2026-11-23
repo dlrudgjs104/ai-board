@@ -162,7 +162,7 @@ def guide(mode, name, path):
               "  2. 이어서 할 일을 요청합니다. 20초 넘게 걸리는 작업은 보드에 카드가 생기고 진행됩니다.",
               "  3. 끝나면 보고를 확인하고, 이상 없으면 카드를 완료 처리하세요. (\"확인 완료\" 라고 말하면 닫습니다)"]
         if not board:
-            L.append("  ※ GitHub 보드가 아직 연결되지 않았습니다. 기록·보드를 쓰려면 터미널에서: ai-board init")
+            L.append(f"  ※ GitHub 보드가 아직 연결되지 않았습니다. 기록·보드를 쓰려면 터미널에서: {aiwf.ROOT}/install.sh --board")
         L += ["", "▶ 이 세션에서 쓸 수 있는 명령 (앞에 ! 를 붙여 실행)",
               "  ! ai-board            보드를 브라우저로 열기       ! ai-board status   연결·대기열 점검",
               "  ! ai-board off / on   이 세션 기록 끄기·켜기",

@@ -1,4 +1,7 @@
-"""초기 설정 마법사: GitHub 계정 → 기록 레포 → 보드. `ai-board init` 이 호출한다.
+"""초기 설정 마법사: GitHub 계정 → 기록 레포 → 보드. install.sh 가 호출한다 (다시 연결: ./install.sh --reconnect).
+
+  python3 lib/boardsetup.py [--repo 이름] [--board 번호|--board-title 제목] [--create-repo] [--reset-columns] [--readme] [-y]
+  python3 lib/boardsetup.py check      기록 레포가 GitHub 에 실제로 있는지 점검 (종료코드 0 정상 · 1 없음 · 2 확인 못 함)
 
 계정은 gh 에 로그인된(활성) 계정 하나만 쓴다.
 - 기록 레포: 기존 레포 이름을 물어보고, 없으면 `work`(비공개)를 기본으로 만든다. 카드는 이 레포의 이슈로 쌓인다.
@@ -209,7 +212,7 @@ def run_init(opts: dict) -> str:
             raise SystemExit(f"기록 레포를 확인하지 못했습니다: {e}")
         if not (opts.get("create_repo") or rname == DEFAULT_REPO and not interactive(opts)
                 or confirm(opts, f"{repo} 가 없습니다. 비공개 레포로 만들까요?")):
-            raise SystemExit(f"기록 레포 {repo} 가 없습니다. 만들려면: ai-board init --repo {repo} --create-repo")
+            raise SystemExit(f"기록 레포 {repo} 가 없습니다. 만들려면: python3 {aiwf.ROOT}/lib/boardsetup.py --repo {repo} --create-repo")
         ghboard.rest("POST", "user/repos" if owner == login else f"orgs/{owner}/repos",
                      {"name": rname, "private": True, "auto_init": True, "has_issues": True,
                       "description": "AI 작업 기록 (ai-workflow): 카드·작업 일지"})
@@ -279,3 +282,50 @@ def run_init(opts: dict) -> str:
     say(f"\n준비 완료: 계정 {login} · 레포 {repo} · 보드 {data['url']}")
     say("자동 설정됨: 이슈 닫힘 ↔ 완료, 완료 14일 뒤 카드 보관. 웹에서 프로젝트별 탭은 필터 label:proj:<이름> 으로 저장")
     return name
+
+
+def check() -> int:
+    """기록 레포가 GitHub 에 실제로 있는지 본다 (install.sh 가 호출). 출력: 'OK|MISSING|UNKNOWN <계정> <레포>'"""
+    d = aiwf.profiles_conf()["profiles"]
+    if not d:
+        print("MISSING  (설정 없음) → ./install.sh --board")
+        return 1
+    name, p = next(iter(d.items()))
+    ghboard.use(name)
+    try:
+        ghboard.rest("GET", f"repos/{p.get('repo')}")
+        print(f"OK       {p.get('login')} {p.get('repo')}")
+        return 0
+    except GitHubError as e:
+        if "Not Found" in str(e) or "404" in str(e):
+            print(f"MISSING  {p.get('login')} {p.get('repo')}")
+            return 1
+        print(f"UNKNOWN  {p.get('login')} {p.get('repo')}  ({str(e)[:80]})")
+        return 2
+
+
+def main(argv=None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(prog="boardsetup", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("action", nargs="?", choices=["check"], help="check: 기록 레포 점검만")
+    ap.add_argument("--repo", help="기록 레포 (이름 또는 owner/이름). 있으면 연결, 없으면 비공개 생성 (기본 work)")
+    ap.add_argument("--create-repo", action="store_true")
+    ap.add_argument("--board", type=int, help="기존 보드 번호")
+    ap.add_argument("--board-title", help="보드 이름 (같은 이름이 있으면 재사용, 없으면 새로 만듦)")
+    ap.add_argument("--reset-columns", action="store_true")
+    ap.add_argument("--yes", "-y", action="store_true", help="묻지 않고 기본값")
+    ap.add_argument("--readme", action="store_true", help="레포 설명서를 최신으로 덮어쓰기")
+    a = ap.parse_args(argv)
+    if a.action == "check":
+        return check()
+    try:
+        run_init({"repo": a.repo, "create_repo": a.create_repo, "board": a.board, "board_title": a.board_title,
+                  "reset_columns": a.reset_columns, "yes": a.yes, "readme": a.readme})
+    except GitHubError as e:
+        print(f"설정 중 GitHub 오류: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

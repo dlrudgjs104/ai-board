@@ -42,7 +42,7 @@ cd ~/ai-workflow
 | 1. 기본 도구 | git, python3, curl, git 사용자 이름·메일 | 없으면 `sudo apt install` |
 | 2. Claude Code | 없으면 공식 설치 스크립트로 설치 | Claude 계정(Pro/Max/Team/Enterprise) 또는 Console API 키. 처음 `claude` 실행 때 로그인 |
 | 3. 명령 등록 | `~/.local/bin` 에 명령 링크, PATH 확인 | 없음 |
-| 4. GitHub 보드 | GitHub CLI 설치·로그인(+`project` 권한), 그 뒤 `ai-board init` 마법사: 기록 레포(기존 레포 연결, 없으면 work 비공개 생성) → 보드(기존 선택, 없으면 AI Board 생성) | GitHub 계정 |
+| 4. GitHub 보드 | GitHub CLI 설치·로그인(+`project` 권한), 그 뒤 설정 마법사: 기록 레포(기존 레포 연결, 없으면 work 비공개 생성) → 보드(기존 선택, 없으면 AI Board 생성) | GitHub 계정 |
 
 ```bash
 ./install.sh --board      # 보드 연동까지 바로
@@ -59,11 +59,12 @@ cd ~/ai-workflow
 
 ### 0) 초기 설정 — GitHub 계정 하나, 1회
 ```bash
-ai-board init                                   # 마법사: 로그인된 계정 → 기록 레포(기존 것 또는 work 생성) → 보드(기존 것 또는 AI Board 생성)
-ai-board init --repo ai-log --board-title "내 보드" -y   # 묻지 않고 이름 지정
+./install.sh --board                            # 마법사: 로그인된 계정 → 기록 레포(기존 것 또는 work 생성) → 보드(기존 것 또는 AI Board 생성)
+./install.sh --reconnect                        # 이미 연결돼 있어도 다시 고르기 (계정을 바꿨을 때 등)
+python3 lib/boardsetup.py --repo ai-log --board-title "내 보드" -y   # 묻지 않고 이름 지정
 ai-board status                                 # 연결된 계정·레포·보드·대기열 점검
 ```
-- **계정은 하나만 쓴다.** `gh` 에 로그인된(활성) 계정의 비공개 기록 레포 하나와 보드 하나에 모든 프로젝트의 카드가 쌓인다. 다른 계정으로 바꾸려면 `gh auth switch`(또는 `gh auth login`) 후 `ai-board init` 을 다시 실행한다.
+- **계정은 하나만 쓴다.** `gh` 에 로그인된(활성) 계정의 비공개 기록 레포 하나와 보드 하나에 모든 프로젝트의 카드가 쌓인다. 다른 계정으로 바꾸려면 `gh auth switch`(또는 `gh auth login`) 후 `./install.sh --reconnect` 를 실행한다.
 - **기록 레포:** 마법사가 "기존에 연결할 레포 이름"을 묻는다. 엔터를 치면 `<내계정>/work` 를 쓰고, 없으면 비공개로 만든다. 카드는 이 레포의 이슈다(이슈 기능이 꺼져 있으면 켠다).
 - **보드:** 목록에서 번호로 기존 보드를 고르고, 엔터면 `AI Board` 를 쓰고(없으면 새로 만든다), 새 이름을 입력하면 그 이름으로 만든다.
 - **기존 것은 연결한다.** 레포가 이미 있으면 그대로 연결하고(레포 첫 화면에 보이도록 설명서를 `README.md` 로 올린다. 직접 쓴 README 가 있으면 건드리지 않고 `AI-WORKFLOW.md` 로 추가), 같은 이름의 보드가 있으면 재사용한다. 이름은 `--repo`, `--board-title`, `--board 번호` 로 자유롭게 정한다.
@@ -114,7 +115,7 @@ ai-board status                                 # 연결된 계정·레포·보�
 ai-board                                   # 보드를 브라우저로 열기
 ai-board status                            # 로그인·보드·대기열·최근 오류 점검
 ```
-- 카드 확인·완료 처리·할 일 추가·검색은 **보드(웹)에서** 한다. 터미널 명령은 위 두 개와 `off`/`on` 이 전부다 (`ai-board init` 은 설치·재설정용).
+- 카드 확인·완료 처리·할 일 추가·검색은 **보드(웹)에서** 한다. 터미널 명령은 위 두 개와 `off`/`on` 이 전부다. 계정·레포·보드 설정은 `install.sh` 로 한다.
 - 사람이 웹에서 카드를 옮기거나 닫은 것은 전송기가 10분에 한 번 로컬 기록에 반영한다. 정확한 현황은 항상 보드가 기준이다.
 
 ### 매일 흐름
@@ -134,10 +135,10 @@ ai-workflow/
 ├─ bin/
 │   ├─ claude-personal   모드 런처 (claude-work·claude-lite 는 링크). 규칙 주입 + 훅 연결
 │   ├─ ai-hook           Claude Code 훅: 활동 기록, 보드 작업 대기열에 넣기, 시작 요약 주입, 시작 안내
-│   └─ ai-board          보드 열기·상태 점검·초기 설정, 세션 중 off/on, 대기열 전송기(자동)
+│   └─ ai-board          보드 열기·상태 점검, 세션 중 off/on
 ├─ lib/
 │   ├─ aiwf.py           공용 (기록 저장소, 연결 정보·실행 모드 상태)
-│   ├─ boardsetup.py     초기 설정 마법사 (계정·기록 레포·보드)
+│   ├─ boardsetup.py     초기 설정 마법사 (계정·기록 레포·보드). install.sh 가 호출, 직접 실행도 가능
 │   ├─ journal.py        작업 일지 (요청·결정·반영·진행 과정 md 생성, 기록 레포 업로드)
 │   ├─ ghboard.py        GitHub 보드 연동 (대기열, 전송기, 카드 생성·이동·보고, 보드 상태 동기화)
 │   └─ redact.py         기록에 올리기 전 시크릿 가리기

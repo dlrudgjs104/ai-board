@@ -3,7 +3,7 @@
 한도에 걸리지 않게 하는 방법
 - 보드·필드·컬럼 ID 는 설정 때 한 번 받아 board.json 에 저장 → 컬럼 이동 = GraphQL 1번
 - 모든 세션의 변경은 queue/<세션ID>.json 에 합쳐진다 (상태는 마지막 값만, 본문은 '바뀜' 표시만)
-- 전송기(ai-board worker)는 컴퓨터에 하나만 돌고, 호출 사이에 간격을 두며, 카드 본문은 1분에 한 번까지만 고친다
+- 전송기는 컴퓨터에 하나만 돌고, 호출 사이에 간격을 두며, 카드 본문은 1분에 한 번까지만 고친다
 - 한도·일시 오류는 기다렸다 다시 보낸다 (대기열에 남아 있으므로 잃지 않음)
 """
 import calendar
@@ -182,7 +182,7 @@ def set_status(num, status):
         return
     opt = c["status_options"].get(status)
     if not opt:
-        raise GitHubError(f"보드에 '{status}' 컬럼이 없습니다 (ai-board setup 으로 다시 맞추세요)")
+        raise GitHubError(f"보드에 '{status}' 컬럼이 없습니다 (python3 {aiwf.ROOT}/lib/boardsetup.py --reset-columns 로 다시 맞추세요)")
     set_option(card["item"], c["status_field"], opt)
     save_card(num, status=status)
 
@@ -430,12 +430,15 @@ def issue_open(num):
     return rest("GET", f"repos/{c['repo']}/issues/{num}").get("state") == "open"
 
 
+WORKER_CODE = "import sys; sys.path.insert(0, sys.argv[1]); import ghboard; ghboard.worker()"     # 전송기 실행 코드
+
+
 def spawn_worker():
     """전송기를 띄운다. 이미 돌고 있으면 새로 띄운 쪽은 바로 끝난다."""
     if not configured():
         return
     try:
-        subprocess.Popen([sys.executable, str(aiwf.ROOT / "bin" / "ai-board"), "worker"], start_new_session=True,
+        subprocess.Popen([sys.executable, "-c", WORKER_CODE, str(aiwf.ROOT / "lib")], start_new_session=True,
                          stdout=subprocess.DEVNULL, stderr=open(aiwf.STATE / "worker.log", "a"), stdin=subprocess.DEVNULL)
     except OSError:
         pass

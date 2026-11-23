@@ -101,8 +101,44 @@ class OnOffCommandTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
 
     def test_removed_commands_are_gone(self):
-        for cmd in ("list", "task", "close", "title", "flush", "archive", "sync", "search", "digest", "notify", "skip", "personal", "work", "now"):
+        for cmd in ("list", "task", "close", "title", "flush", "archive", "sync", "search", "digest", "notify", "skip", "personal", "work", "now",
+                    "init", "check", "worker", "register"):
             self.assertNotEqual(self.run_cli(cmd).returncode, 0, cmd)
+
+
+class SetupEntryPointsTest(unittest.TestCase):
+    """ai-board 밖으로 옮긴 내부 진입점(설정 마법사 check, 전송기 실행 코드)이 동작하는지."""
+
+    def test_boardsetup_check_without_config(self):
+        state = helpers.fresh_state()
+        env = {**os.environ, "AI_WORKFLOW_STATE": str(state)}
+        r = subprocess.run([sys.executable, str(helpers.ROOT / "lib" / "boardsetup.py"), "check"], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertTrue(r.stdout.startswith("MISSING"), r.stdout)
+
+    def test_boardsetup_help_lists_options(self):
+        r = subprocess.run([sys.executable, str(helpers.ROOT / "lib" / "boardsetup.py"), "--help"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for opt in ("--repo", "--board", "--board-title", "--reset-columns", "check"):
+            self.assertIn(opt, r.stdout)
+
+    def test_worker_code_imports_from_lib(self):
+        """전송기를 띄우는 코드가 다른 폴더에서도 ghboard 를 import 할 수 있다 (실제 전송 루프는 돌리지 않는다)."""
+        code = ghboard.WORKER_CODE.replace("ghboard.worker()", "print(callable(ghboard.worker))")
+        r = subprocess.run([sys.executable, "-c", code, str(helpers.ROOT / "lib")], capture_output=True, text=True, cwd="/",
+                           env={**os.environ, "AI_WORKFLOW_STATE": os.environ["AI_WORKFLOW_STATE"]})
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "True"), r.stderr)
+
+    def test_spawn_worker_uses_worker_code(self):
+        helpers.fresh_state()
+        aiwf.save_profiles({"profiles": {"default": {"login": "me", "repo": "me/work"}}})
+        ghboard.use("default")
+        aiwf.save_json(ghboard.BOARD, {"repo": "me/work", "project_id": "P", "status_field": "F"})
+        with mock.patch.object(ghboard.subprocess, "Popen") as popen:
+            ghboard.spawn_worker()
+        args = popen.call_args.args[0]
+        self.assertEqual(args[1:3], ["-c", ghboard.WORKER_CODE])
+        self.assertTrue(args[3].endswith("lib"))
 
 
 class LocalStateMaskedTest(unittest.TestCase):

@@ -53,7 +53,7 @@ ai-board off | on             # 세션 중 기록 끄기 / 켜기
 
 ## 지우거나 옮길 때
 - 레포를 지우면 카드와 일지가 모두 사라집니다. 보관만 하려면 Archive 하세요.
-- 레포나 보드 이름을 바꾸거나 다른 곳으로 옮기면 `ai-board init --repo <새 이름> --board <번호>` 로 다시 연결하세요.
+- 레포나 보드 이름을 바꾸거나 다른 곳으로 옮기면 `python3 ~/ai-workflow/lib/boardsetup.py --repo <새 이름> --board <번호>` 로 다시 연결하세요.
 
 ---
 _이 파일은 ai-workflow 가 만들었습니다. 도구 사용법은 ai-workflow 레포의 README 를 참고하세요._
