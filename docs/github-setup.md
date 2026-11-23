@@ -1,9 +1,9 @@
-# GitHub 보드 설정 (AI Board)
+# GitHub 보드 설정 (ai-board)
 
-모든 프로젝트·세션의 작업 카드는 **기록 레포 하나**(예: `<내계정>/work`, 비공개)의 이슈로 만들어지고, 그 레포에 연결된 **GitHub Projects 보드 "AI Board"** 에서 본다.
+모든 프로젝트·세션의 작업 카드는 **기록 레포 하나**(예: `<내계정>/ai-board`, 비공개)의 이슈로 만들어지고, 그 레포에 연결된 **GitHub Projects 보드 "ai-board"** 에서 본다.
 
 ```
-claude-personal / claude-work 세션 ─ 훅 ─▶ 로컬 대기열 ─▶ 전송기 1개 ─▶ 기록 레포 이슈 + AI Board
+claude-personal / claude-work 세션 ─ 훅 ─▶ 로컬 대기열 ─▶ 전송기 1개 ─▶ 기록 레포 이슈 + ai-board
  (여러 프로젝트, 여러 세션 동시에)            (변경 합치기)   (순서대로·간격 두고)   Backlog · AI작업중 · 판단필요 · 검토대기 · 완료
 ```
 - 작업 레포(회사·조직 레포 포함)에는 아무것도 만들지 않는다. 작업 레포 권한이 없어도 된다.
@@ -40,7 +40,7 @@ gh auth status               # Token scopes 에 'project' 확인
 ## 3. 기록 레포 + 보드
 계정은 로그인한 GitHub 계정 하나만 쓴다. 카드(이슈)와 작업 일지(`records/`)가 기록 레포에 쌓이고, 카드는 보드 하나에 모인다.
 ```bash
-./install.sh --board                          # 마법사: 기록 레포(기존 레포 이름, 엔터면 work 사용·생성) → 보드(번호로 선택, 엔터면 AI Board 사용·생성)
+./install.sh --board                          # 마법사: 기록 레포(기존 레포 이름, 엔터면 ai-board 사용·생성) → 보드(번호로 선택, 엔터면 ai-board 사용·생성)
 ./install.sh --reconnect                      # 이미 연결돼 있어도 다시 고르기
 python3 lib/boardsetup.py --repo ai-log --board-title "내 보드"   # 이름 지정. 레포·보드가 이미 있으면 연결, 없으면 만듦
 python3 lib/boardsetup.py --board 3 --repo owner/repo          # 이미 있는 보드(팀 보드 등)를 번호로 연결

@@ -1,4 +1,4 @@
-# board: GitHub Projects 보드(AI Board)에 작업이 실시간으로 보이게 하기 (personal / work 공통)
+# board: GitHub Projects 보드(ai-board)에 작업이 실시간으로 보이게 하기 (personal / work 공통)
 
 사람은 모든 프로젝트·세션의 작업을 GitHub Projects 보드 하나에서 본다. **카드 생성·이동·보고는 훅이 자동으로 한다.** AI는 `gh` 나 `ai-board` 로 카드를 직접 만들거나 옮기지 않는다.
 

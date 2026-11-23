@@ -4,7 +4,7 @@
 
 ```
  ┌ 터미널 1: ~/shop     $ claude-personal ─┐
- ├ 터미널 2: ~/blog     $ claude-personal ─┼─ 훅이 자동 기록 ─▶ 대기열 ─▶ 전송기 1개 ─▶ GitHub Projects "AI Board"
+ ├ 터미널 2: ~/blog     $ claude-personal ─┼─ 훅이 자동 기록 ─▶ 대기열 ─▶ 전송기 1개 ─▶ GitHub Projects "ai-board"
  └ 터미널 3: ~/company  $ claude-work     ─┘                                          Backlog · AI작업중 · 판단필요 · 검토대기 · 완료
           요청·답변·진행 과정 전체 ─▶ 기록 레포 records/ (증적용 작업 일지) · 다음 세션 시작 때 카드·최근 세션을 자동으로 이어받음
 ```
@@ -42,14 +42,21 @@ cd ~/ai-workflow
 | 1. 기본 도구 | git, python3, curl, git 사용자 이름·메일 | 없으면 `sudo apt install` |
 | 2. Claude Code | 없으면 공식 설치 스크립트로 설치 | Claude 계정(Pro/Max/Team/Enterprise) 또는 Console API 키. 처음 `claude` 실행 때 로그인 |
 | 3. 명령 등록 | `~/.local/bin` 에 명령 링크, PATH 확인 | 없음 |
-| 4. GitHub 보드 | GitHub CLI 설치·로그인(+`project` 권한), 그 뒤 설정 마법사: 기록 레포(기존 레포 연결, 없으면 work 비공개 생성) → 보드(기존 선택, 없으면 AI Board 생성) | GitHub 계정 |
+| 4. GitHub 보드 | GitHub CLI 설치·로그인(+`project` 권한), 그 뒤 설정 마법사: 기록 레포(기존 레포 연결, 없으면 ai-board 비공개 생성) → 보드(기존 선택, 없으면 ai-board 생성) | GitHub 계정 |
 
 ```bash
 ./install.sh --board      # 보드 연동까지 바로
 ./install.sh --no-board   # 보드 없이 (일지는 로컬에만 남음)
 ./install.sh --check      # 바꾸지 않고 점검만
 ./install.sh --uninstall  # 명령 링크만 제거
+./install.sh --uninstall --purge --dry-run   # 처음부터 다시 설치해 보려고 모두 지울 때: 무엇을 지울지만 먼저 확인
+./install.sh --uninstall --purge             # 연결 정보·세션·작업 일지 삭제 + 연결한 gh 계정 로그아웃 + 전송기 종료 (확인을 묻는다)
+./install.sh --uninstall --purge --keep-records   # 작업 일지는 남기고 나머지만 삭제
 ```
+
+- `--purge` 가 지우는 것: `~/.ai-workflow`(연결 정보·세션·대기열·작업 일지), 이 도구가 연결한 `gh` 계정 로그인 1개, 백그라운드 전송기.
+- **지우지 않는 것:** GitHub 의 기록 레포·보드·카드, 다른 `gh` 계정, `~/.git-credentials`. 그래서 다시 설치하면 마법사가 기존 레포·보드에 다시 연결한다. 새로 만드는 과정까지 시험하려면 마법사에서 새 레포 이름을 입력하거나 GitHub 웹에서 지운 뒤 진행한다.
+- 홈 폴더나 `/`, ai-workflow 상태 폴더가 아닌 곳은 지우지 않는다. 기록 레포에 올라가지 않은 일지와 아직 보내지 않은 대기열은 복구할 수 없으니 `--dry-run` 으로 먼저 확인한다.
 
 보드의 컬럼, "이슈 닫힘 ↔ 완료" 자동화, 완료 카드 자동 보관까지 설치 때 자동으로 설정된다. 자세한 계정·권한·알림 설정은 [docs/github-setup.md](docs/github-setup.md).
 
@@ -59,14 +66,14 @@ cd ~/ai-workflow
 
 ### 0) 초기 설정 — GitHub 계정 하나, 1회
 ```bash
-./install.sh --board                            # 마법사: 로그인된 계정 → 기록 레포(기존 것 또는 work 생성) → 보드(기존 것 또는 AI Board 생성)
+./install.sh --board                            # 마법사: 로그인된 계정 → 기록 레포(기존 것 또는 ai-board 생성) → 보드(기존 것 또는 ai-board 생성)
 ./install.sh --reconnect                        # 이미 연결돼 있어도 다시 고르기 (계정을 바꿨을 때 등)
 python3 lib/boardsetup.py --repo ai-log --board-title "내 보드" -y   # 묻지 않고 이름 지정
 ai-board status                                 # 연결된 계정·레포·보드·대기열 점검
 ```
 - **계정은 하나만 쓴다.** `gh` 에 로그인된(활성) 계정의 비공개 기록 레포 하나와 보드 하나에 모든 프로젝트의 카드가 쌓인다. 다른 계정으로 바꾸려면 `gh auth switch`(또는 `gh auth login`) 후 `./install.sh --reconnect` 를 실행한다.
-- **기록 레포:** 마법사가 "기존에 연결할 레포 이름"을 묻는다. 엔터를 치면 `<내계정>/work` 를 쓰고, 없으면 비공개로 만든다. 카드는 이 레포의 이슈다(이슈 기능이 꺼져 있으면 켠다).
-- **보드:** 목록에서 번호로 기존 보드를 고르고, 엔터면 `AI Board` 를 쓰고(없으면 새로 만든다), 새 이름을 입력하면 그 이름으로 만든다.
+- **기록 레포:** 마법사가 "기존에 연결할 레포 이름"을 묻는다. 엔터를 치면 `<내계정>/ai-board` 를 쓰고, 없으면 비공개로 만든다. 카드는 이 레포의 이슈다(이슈 기능이 꺼져 있으면 켠다).
+- **보드:** 목록에서 번호로 기존 보드를 고르고, 엔터면 `ai-board` 를 쓰고(없으면 새로 만든다), 새 이름을 입력하면 그 이름으로 만든다.
 - **기존 것은 연결한다.** 레포가 이미 있으면 그대로 연결하고(레포 첫 화면에 보이도록 설명서를 `README.md` 로 올린다. 직접 쓴 README 가 있으면 건드리지 않고 `AI-WORKFLOW.md` 로 추가), 같은 이름의 보드가 있으면 재사용한다. 이름은 `--repo`, `--board-title`, `--board 번호` 로 자유롭게 정한다.
 - **설명서는 `README.md` 로 올라간다** (카드·일지·보드 흐름·명령). 새 레포나 비어 있는 README 는 대체하고, 이 도구가 만든 것은 다시 실행할 때 갱신한다. 직접 쓴 README 는 보존하고 `AI-WORKFLOW.md` 로 올린다 (덮어쓰려면 `--readme`).
 - 프로젝트 레포에는 아무 파일도 만들지 않는다 (설정은 `~/.ai-workflow/profiles.json`).

@@ -4,8 +4,8 @@
   python3 lib/boardsetup.py check      기록 레포가 GitHub 에 실제로 있는지 점검 (종료코드 0 정상 · 1 없음 · 2 확인 못 함)
 
 계정은 gh 에 로그인된(활성) 계정 하나만 쓴다.
-- 기록 레포: 기존 레포 이름을 물어보고, 없으면 `work`(비공개)를 기본으로 만든다. 카드는 이 레포의 이슈로 쌓인다.
-- 보드: 기존 보드를 고르고, 없으면 `AI Board` 를 새로 만든다.
+- 기록 레포: 기존 레포 이름을 물어보고, 없으면 `ai-board`(비공개)를 기본으로 만든다. 카드는 이 레포의 이슈로 쌓인다.
+- 보드: 기존 보드를 고르고, 없으면 `ai-board` 를 새로 만든다.
 - 설명서는 README.md 로 올린다 (직접 쓴 README 가 있으면 건드리지 않고 AI-WORKFLOW.md 로)
 """
 import base64
@@ -19,8 +19,8 @@ import aiwf
 import ghboard
 from ghboard import GitHubError
 
-DEFAULT_REPO = "work"
-DEFAULT_BOARD = "AI Board"
+DEFAULT_REPO = "ai-board"
+DEFAULT_BOARD = "ai-board"
 
 
 def say(*a):
@@ -192,7 +192,7 @@ def run_init(opts: dict) -> str:
         old = conf["profiles"][name]
         say(f"이미 연결돼 있습니다 (레포 {old.get('repo')} · 보드 #{old.get('board')}). 설정을 다시 고릅니다.")
 
-    # 1) 기록 레포: 기존 레포 이름을 묻고, 비우면 work 를 기본으로 (없으면 비공개로 생성)
+    # 1) 기록 레포: 기존 레포 이름을 묻고, 비우면 ai-board 를 기본으로 (없으면 비공개로 생성)
     repo = opts.get("repo")
     if not repo:
         say(f"기록 레포: 작업 카드(이슈)와 일지가 쌓일 비공개 레포입니다.")
@@ -218,7 +218,7 @@ def run_init(opts: dict) -> str:
                       "description": "AI 작업 기록 (ai-workflow): 카드·작업 일지"})
         say(f"기록 레포 생성: {repo} (비공개)")
 
-    # 2) 보드: 기존 보드를 고르거나, 없으면 AI Board 를 새로 만든다
+    # 2) 보드: 기존 보드를 고르거나, 없으면 ai-board 를 새로 만든다
     boards = list_boards(owner, login)
     number, title, fresh = opts.get("board"), opts.get("board_title"), False
     if number:
