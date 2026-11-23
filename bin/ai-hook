@@ -7,7 +7,7 @@
     작업 시작 → 카드 생성·AI작업중 / 질문·권한 승인 → 판단필요 / 답변 끝 → 검토대기 + 보고 코멘트
     카드는 파일 수정·커밋·질문·1분 넘는 작업이 있을 때만 만든다 (간단한 질문 세션은 보드에 안 올림)
 - SessionStart: 이 프로젝트의 열린 카드, 최근 세션, 동시에 실행 중인 세션을 Claude 에게 알려 준다
-- 모드: personal / work / off(꺼짐) / skip(다음 요청 한 건만 제외) 를 세션 중에 바꿀 수 있다 (ai-board off|on|personal|work|skip).
+- 모드: 런처가 정한 모드(personal / work / lite)로 동작하고, 세션 중 `ai-board off|on` 으로 끄고 켤 수 있다.
     모드별 규칙(personal.md / work.md)은 요청 때마다 이 훅이 넣어 준다. off 이면 기록·보드를 모두 건너뛴다
 훅이 실패해도 Claude 작업은 막지 않는다.
 """
@@ -23,14 +23,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 import aiwf  # noqa: E402
 import ghboard  # noqa: E402
 import journal  # noqa: E402
+from redact import redact  # noqa: E402
 
 EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 
 
 OFF_NOTE = ("[ai-workflow] 이 세션은 지금 워크플로우가 꺼져 있다 (ai-board on 으로 다시 켠다). 보드·보고 형식 규칙을 "
             "적용하지 않고 일반 claude 처럼 작업한다. 시크릿 금지와 되돌리기 어려운 작업의 사전 확인은 유지한다.")
-SKIP_NOTE = ("[ai-workflow] 이번 요청 한 건은 기록에서 제외된다(skip). 보드 보고 형식을 적용하지 않는다. "
-             "다음 요청부터 원래 모드로 돌아간다. 시크릿 금지와 위험 작업의 사전 확인은 유지한다.")
+
 
 
 def mode_context(rs, mode):
@@ -44,10 +44,7 @@ def mode_context(rs, mode):
     if rs.get("injected") == mode:
         m = re.search(r"^> 요약:\s*(.+)$", text, re.M)
         return f"[ai-workflow 현재 모드: {mode}] {m.group(1)}" if m else ""
-    prev = rs.get("injected")
     head = f"[ai-workflow 현재 모드: {mode}]"
-    if prev in ("personal", "work") and prev != mode:
-        head += f"\n모드가 {prev} 에서 {mode} 로 바뀌었다. {prev} 규칙은 더 이상 적용하지 않고 아래 {mode} 규칙만 따른다."
     rs["injected"] = mode
     aiwf.save_run_state(rs)
     return head + "\n\n" + text
@@ -91,15 +88,25 @@ def opening_request(s, card):
     return (hit or (reqs[-1] if reqs else {})).get("text") or s.get("request")
 
 
+def fetched_recently(path, secs=600):
+    """최근 secs 초 안에 fetch 했으면 True. 세션을 열 때마다 네트워크를 기다리지 않게 한다 (느리거나 끊긴 네트워크에서 시작 지연 방지)."""
+    fh = git(path, "rev-parse", "--git-path", "FETCH_HEAD")
+    try:
+        return bool(fh) and time.time() - (Path(path) / fh).stat().st_mtime < secs
+    except OSError:
+        return False
+
+
 def remote_note(path):
     """다른 PC 에서 작업했을 수 있으니 원격과의 차이와 작업 중인 변경을 알려 준다 (fetch 만 하고 pull 은 하지 않는다)."""
     if not aiwf.is_repo(path) or not git(path, "remote"):
         return []
-    try:
-        subprocess.run(["git", "-C", path, "fetch", "--quiet"], capture_output=True, timeout=5,
-                       env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    if not fetched_recently(path):
+        try:
+            subprocess.run(["git", "-C", path, "fetch", "--quiet"], capture_output=True, timeout=5,
+                           env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     out = []
     counts = git(path, "rev-list", "--left-right", "--count", "HEAD...@{u}")
     if counts:
@@ -157,17 +164,15 @@ def guide(mode, name, path):
         if not board:
             L.append("  ※ GitHub 보드가 아직 연결되지 않았습니다. 기록·보드를 쓰려면 터미널에서: ai-board init")
         L += ["", "▶ 이 세션에서 쓸 수 있는 명령 (앞에 ! 를 붙여 실행)",
-              "  ! ai-board            보드를 브라우저로 열기       ! ai-board list     현재 세션·카드 현황",
-              '  ! ai-board task "할 일"  나중에 할 일을 Backlog 카드로 등록 (#번호 진행해줘 로 시작)',
-              "  ! ai-board close 번호  확인 끝난 카드를 완료로 닫기   ! ai-board status   연결·대기열 점검",
-              "  ! ai-board off / on   이 세션 기록 끄기·켜기       ! ai-board skip     다음 요청 한 건만 기록 제외",
-              "  ! ai-board personal | work   세션 중 모드 전환 (바뀌면 새 카드)   ! ai-board now   현재 모드",
+              "  ! ai-board            보드를 브라우저로 열기       ! ai-board status   연결·대기열 점검",
+              "  ! ai-board off / on   이 세션 기록 끄기·켜기",
+              "  (카드는 훅이 자동으로 만들고 옮깁니다. 확인이 끝나면 보드에서 이슈를 닫으면 완료가 됩니다)",
               "", "▶ 기록 위치",
               "  · 요청·답변·진행 과정 전체: 작업 일지 (기록 레포 records/ + ~/.ai-workflow/records/)",
               "  · 요청별 진행 상황: GitHub 보드(AI Board)의 카드. 사람 판단이 필요하면 판단필요로 이동합니다."]
     else:
         L += ["지정한 문서만 읽고 작업합니다. 기록·보드 규칙은 적용되지 않습니다.",
-              "  ! ai-board off / on   (lite 에서는 켜기·끄기만 가능)"]
+              "  ! ai-board off / on   기록 끄기·켜기"]
     L += ["", "※ 이 안내는 새로 시작할 때만 나옵니다. 그냥 claude 로 시작한 세션에는 워크플로우가 적용되지 않습니다."]
     return "\n".join(L)
 
@@ -184,30 +189,20 @@ def main():
     f = aiwf.session_file(sid)
     s = aiwf.load_json(f, None)
     s_loaded = bool(s)
-    # 모드: ai-board off|on|personal|work|skip 으로 세션 중에 바뀐다 (런처 실행별 상태 파일)
+    # 모드: ai-board off|on 으로 세션 중에 끄고 켠다 (런처 실행별 상태 파일)
     rs = aiwf.run_state()
     if event == "SessionStart":
         aiwf.prune_runs()
+        aiwf.prune_sessions()
         rs["injected"] = None       # 새 세션·--resume·/clear·압축 뒤에는 모드 규칙을 다시 넣어 준다
-        aiwf.save_run_state(rs)
-    if event == "UserPromptSubmit":
-        if rs.get("skip") == "active":      # 이전 건너뛰기 요청이 Stop 없이 끝남(중단): 이번 요청은 정상 처리
-            rs["skip"] = None
-        elif rs.get("skip") == "next":
-            rs["skip"] = "active"
         aiwf.save_run_state(rs)
     mode = aiwf.effective_mode(rs)
     if mode == "off":
         # 기록·보드 규칙을 모두 건너뛴다. 요청 내용도 저장하지 않는다
-        skipping = rs.get("skip") == "active"
-        if event == "UserPromptSubmit" and (skipping or rs.get("injected") != "off"):
-            if not skipping:
-                rs["injected"] = "off"
-                aiwf.save_run_state(rs)
-            print(SKIP_NOTE if skipping else OFF_NOTE)
-        if event == "Stop" and skipping:
-            rs["skip"] = None
+        if event == "UserPromptSubmit" and rs.get("injected") != "off":
+            rs["injected"] = "off"
             aiwf.save_run_state(rs)
+            print(OFF_NOTE)
         if s_loaded and s.get("last_eff") != "off":
             # 작업 도중 껐으면 열려 있던 카드를 검토대기로 정리한다
             ghboard.use(s.get("profile") or aiwf.resolve_profile(s.get("path") or cwd))
@@ -229,13 +224,12 @@ def main():
     prof = s.get("profile") or aiwf.resolve_profile(path)      # 이 프로젝트의 기록 레포·보드 (프로필)
     ghboard.use(prof)
     s["profile"] = prof
-    prev_mode = s.get("mode")      # 이 세션이 마지막으로 일한 모드 (모드가 바뀌면 새 카드를 쓴다)
     s.update(mode=mode, launch_mode=aiwf.launch_mode(), last_eff=mode)
     board = mode != "lite" and ghboard.configured()
     card = ghboard.card_of(sid) if board else None
     ops = None          # 보드 대기열에 넣을 작업
     jpush = False       # 일지를 기록 레포에 올릴지
-    detail, out, out_ctx = "", None, None     # out: 세션 시작·요청 때 문맥, out_ctx: 도구 실행 뒤 문맥
+    detail, out = "", None     # out: 세션 시작·요청 때 Claude 에게 넣어 줄 문맥
 
     if event == "SessionStart":
         aiwf.register_project(name, path)
@@ -245,7 +239,7 @@ def main():
         out = brief(s, name, path)
 
     elif event == "UserPromptSubmit":
-        prompt = (data.get("prompt") or "").strip()
+        prompt = redact((data.get("prompt") or "").strip())
         slash = bool(re.match(r"^/[A-Za-z][\w:-]*(\s|$)", prompt))     # /compact 같은 명령 (경로 /tmp/... 는 아님)
         if prompt and not slash:
             s["request"] = aiwf.short(prompt, 400)
@@ -255,7 +249,6 @@ def main():
         s.update(state="working", turn_started=aiwf.now(), turn_files=[], turn_commits=0, note="")
         detail = aiwf.short(prompt, 200)
         notes = []
-        switched = bool(board and card and prev_mode in ("personal", "work") and prev_mode != mode)
         ctx = mode_context(rs, mode)
         if ctx:
             notes.append(ctx)
@@ -273,9 +266,6 @@ def main():
         m = re.match(r"^\s*#(\d{1,6})\b", prompt) or re.search(r"카드\s*#(\d{1,6})", prompt)
         if board and m:
             ops = {"bind": int(m.group(1)), "status": "AI작업중", "body": True}
-        elif switched:
-            # 모드가 바뀌면(personal ↔ work) 완료 조건이 달라지므로 이전 카드는 두고 새 카드를 만든다
-            ops = {"create": True, "status": "AI작업중", "body": True, "detach": True}
         elif board and card:
             # 현재 카드가 열려 있으면 이어 쓰고(검토대기·판단필요 → AI작업중), 완료·닫힘이면 전송기가 새 카드를 만든다
             ops = {"status": "AI작업중", "body": True}
@@ -284,16 +274,14 @@ def main():
         elif board and aiwf.is_repo(path) and prompt and not slash:
             # 20초 뒤에도 작업 중이면 카드를 만든다. 그 전에 답이 끝나면 취소 (간단한 질문은 보드에 안 올림)
             ops = {"create": True, "status": "AI작업중", "body": True, "tentative": True, "delay": 20}
-        if board and card and not switched:
-            notes.append(f"[ai-workflow] 이 세션의 현재 보드 카드: #{card}. 사용자가 확인 완료·완료 처리를 요청하면 `ai-board close {card}` 를 실행한다.")
         out = "\n".join(notes) or None
 
     elif event == "PreToolUse" and data.get("tool_name") == "AskUserQuestion":
         qs = (data.get("tool_input") or {}).get("questions") or []
-        text = "\n".join(f"- {q.get('question', '')}" + "".join(f"\n  - {o.get('label', '')}: {o.get('description', '')}"
-                                                                 for o in q.get("options", [])) for q in qs)
-        s["pending_q"] = " / ".join(q.get("question", "") for q in qs)
-        s["state"], s["note"] = "needs_you", aiwf.short(" / ".join(q.get("question", "") for q in qs), 200)
+        text = redact("\n".join(f"- {q.get('question', '')}" + "".join(f"\n  - {o.get('label', '')}: {o.get('description', '')}"
+                                                                      for o in q.get("options", [])) for q in qs))
+        s["pending_q"] = redact(" / ".join(q.get("question", "") for q in qs))
+        s["state"], s["note"] = "needs_you", aiwf.short(redact(" / ".join(q.get("question", "") for q in qs)), 200)
         detail = s["note"]
         event = "Question"
         if board:
@@ -329,7 +317,7 @@ def main():
                 ops = {"body": True} if card else {"create": True, "status": "AI작업중", "body": True}
         elif tool == "Bash":
             cmd = ti.get("command", "")
-            s["last_tool"] = "실행 " + aiwf.short(cmd, 80)
+            s["last_tool"] = "실행 " + redact(aiwf.short(cmd, 80))
             if re.search(r"\bgit\b.*\bcommit\b", cmd):
                 c = git(path, "log", "-1", "--format=%h %s")
                 if c and c not in (s.get("commits") or []):
@@ -344,13 +332,9 @@ def main():
             resp = json.dumps(data.get("tool_response") or "", ensure_ascii=False)
             if re.search(r"\bgit\b.*\bpush\b", cmd) and not re.search(r"rejected|error:|fatal:", resp):
                 s["pushed"], s["renamed"] = True, False
-                detail, event = "푸시 " + aiwf.short(cmd, 60), "Push"
+                detail, event = "푸시 " + redact(aiwf.short(cmd, 60)), "Push"
                 if board:
                     ops = ops or {"body": True}
-                    out_ctx = ("[ai-workflow] 푸시했다. 이 세션 보드 카드의 제목을 '요청 요약 > 수정된 내용' 으로 바꾼다 "
-                               f"(각각 25자 안팎, 사람이 한눈에 알아보게). 실행: ai-board title --session {sid} \"요청 요약 > 수정된 내용\"")
-            if re.search(r"\bai-board\b.*\btitle\b", cmd):
-                s["renamed"] = True
         elif tool == "AskUserQuestion":
             s["note"] = ""
             ans = data.get("tool_response")
@@ -361,10 +345,10 @@ def main():
                 ops = {"status": "AI작업중"}
         if not detail and not ops:
             aiwf.save_json(f, {**s, "last_activity": aiwf.now()})
-            return 0    # 일반 도구 실행은 활동 시각만 갱신 (ai-board title 실행 표시는 위에서 저장됨)
+            return 0    # 일반 도구 실행은 활동 시각만 갱신
 
     elif event == "Notification":
-        msg = data.get("message", "")
+        msg = redact(data.get("message", ""))
         if re.search(r"permission|권한|승인", msg, re.I):   # 권한 승인 대기만 '판단필요'로 (단순 입력 대기는 무시)
             s["state"], s["note"] = "needs_you", aiwf.short(msg, 200)
             detail = s["note"]
@@ -375,7 +359,7 @@ def main():
             return 0
 
     elif event == "Stop":
-        msg = data.get("last_assistant_message") or ""
+        msg = redact(data.get("last_assistant_message") or "")
         s["summary"] = aiwf.short_lines(msg, 3000)
         if mode != "lite":
             journal.finish_turn(s, msg, data.get("transcript_path"))
@@ -435,8 +419,6 @@ def main():
                               "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": out}}, ensure_ascii=False))
         else:
             print(out)
-    if out_ctx:
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": out_ctx}}, ensure_ascii=False))
     return 0
 
 

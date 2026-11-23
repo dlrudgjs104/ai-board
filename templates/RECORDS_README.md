@@ -35,7 +35,7 @@ claude-personal / claude-work 세션
 4. **확인이 끝나면** 이슈를 닫습니다 → **완료** (개인 모드에서 커밋·푸시까지 하면 자동 완료).
 5. 완료 후 14일이 지난 카드는 보드에서 자동 보관됩니다 (이슈는 그대로).
 
-한 번의 짧은 질문처럼 기록이 필요 없는 요청은 카드가 만들어지지 않고, `ai-board skip`(다음 한 건만) 또는 `ai-board off`(세션 전체)로 기록을 끌 수 있습니다.
+한 번의 짧은 질문처럼 기록이 필요 없는 요청은 카드가 만들어지지 않고, `ai-board off`(세션 전체)로 기록을 끌 수 있습니다.
 
 ## 카드 읽는 법
 - 제목: `[프로젝트] 요청 요약 > 수정된 내용`
@@ -47,12 +47,8 @@ claude-personal / claude-work 세션
 
 ```bash
 ai-board                      # 보드 열기
-ai-board list                 # 터미널에서 현황
-ai-board task "할 일" -p 이름   # Backlog 카드 추가 → 세션에서 "#번호 진행해줘"
-ai-board close 12             # 확인 완료 (카드 → 완료, 이슈 닫기)
-ai-board off | on | skip      # 세션 중 기록 끄기 / 켜기 / 다음 한 건만 제외
-ai-board personal | work      # 세션 중 모드 전환 (새 카드)
 ai-board status               # 연결된 계정·레포·보드와 대기열 점검
+ai-board off | on             # 세션 중 기록 끄기 / 켜기
 ```
 
 ## 지우거나 옮길 때

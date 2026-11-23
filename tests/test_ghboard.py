@@ -52,20 +52,6 @@ class CardTest(unittest.TestCase):
         ghboard.save_card(7, status="완료")
         self.assertIsNone(ghboard.card_of("s1"))
 
-    def test_set_status_notifies_only_on_needs_you(self):
-        with mock.patch.object(ghboard, "graphql"), mock.patch("notify.needs_you") as n:
-            ghboard.set_status(7, "검토대기")
-            n.assert_not_called()
-            ghboard.set_status(7, "판단필요")
-            n.assert_called_once_with("shop", 7, "https://x/7")
-            ghboard.set_status(7, "판단필요")          # 이미 같은 상태면 다시 알리지 않는다
-            self.assertEqual(n.call_count, 1)
-
-    def test_notify_failure_does_not_block_move(self):
-        with mock.patch.object(ghboard, "graphql"), mock.patch("notify.needs_you", side_effect=RuntimeError("x")):
-            ghboard.set_status(7, "판단필요")
-        self.assertEqual(ghboard.cards()["7"]["status"], "판단필요")
-
     def test_comment_and_title_are_redacted(self):
         secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
         with mock.patch.object(ghboard, "rest") as rest:

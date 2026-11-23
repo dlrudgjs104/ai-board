@@ -4,7 +4,7 @@
   sessions/<세션ID>.json   세션별 현재 상태 (훅이 갱신, 대시보드가 읽음)
   events.jsonl             모든 세션의 활동 기록 (한 줄 = 한 이벤트)
   projects.json            알려진 프로젝트 목록 {경로: {name, path, seen}}
-  runs/<실행ID>.json       런처 실행별 모드 상태 (ai-board off|on|personal|work|skip 이 쓰고 훅이 읽음)
+  runs/<실행ID>.json       런처 실행별 모드 상태 (ai-board off|on 이 쓰고 훅이 읽음)
   board.json · cards.json · queue/   GitHub 보드 설정, 카드 기록, 보낼 작업 (lib/ghboard.py)
 """
 import json
@@ -203,7 +203,7 @@ def run_file(rid=None) -> Path:
 
 
 def run_state(rid=None) -> dict:
-    """{mode: 사용자가 정한 모드(없으면 시작 모드), prev: 끄기 전 모드, skip: None|"next"|"active", injected: 마지막으로 규칙을 넣어 준 모드}"""
+    """{mode: "off" 이거나 없음(없으면 시작 모드), prev: 끄기 전 모드, injected: 마지막으로 규칙을 넣어 준 모드}"""
     return load_json(run_file(rid), {}) if (rid or run_id()) else {}
 
 
@@ -218,10 +218,8 @@ def launch_mode() -> str:
 
 
 def effective_mode(rs=None) -> str:
-    """지금 이 세션에 적용되는 모드: personal | work | lite | off. 건너뛰기 중인 요청은 off."""
+    """지금 이 세션에 적용되는 모드: personal | work | lite | off."""
     rs = run_state() if rs is None else rs
-    if rs.get("skip") == "active":
-        return "off"
     return rs.get("mode") or launch_mode()
 
 
@@ -229,6 +227,17 @@ def prune_runs(days=7):
     """오래된 실행 상태 파일 정리."""
     if RUNS.is_dir():
         for f in RUNS.glob("*.json"):
+            try:
+                if now() - f.stat().st_mtime > days * 86400:
+                    f.unlink()
+            except OSError:
+                pass
+
+
+def prune_sessions(days=30):
+    """오래 손대지 않은 세션 상태 파일 정리 (시작 때 전부 읽으므로 쌓이면 느려진다). 작업 일지·카드는 그대로 남는다."""
+    if SESSIONS.is_dir():
+        for f in SESSIONS.glob("*.json"):
             try:
                 if now() - f.stat().st_mtime > days * 86400:
                     f.unlink()

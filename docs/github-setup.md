@@ -53,7 +53,7 @@ ai-board status                               # 로그인·레포·보드·대�
 - **이슈 닫힘 ↔ 완료:** `init` 이 새 보드의 기본 컬럼(Todo/In Progress/Done)을 ID 를 유지한 채 Backlog/AI작업중/완료 로 이름만 바꾼다. 그래서 GitHub 기본 자동화가 그대로 동작한다.
   - *Item closed*: 이슈를 닫으면 카드가 완료로
   - *Auto-close issue*: 카드를 완료로 옮기면 이슈가 닫힘
-- **보관:** 완료된 지 14일 지난 카드는 전송기가 하루 한 번 보드에서 보관한다 (`ai-board archive --days N` 으로 직접도 가능). 이슈는 그대로 남는다.
+- **보관:** 완료된 지 14일 지난 카드는 전송기가 하루 한 번 보드에서 보관한다. 이슈는 그대로 남는다.
 - 선택: 보기(View)를 **Board** 레이아웃으로 두고, 프로젝트별 탭은 필터 `label:proj:trendist` 로 Save.
 
 > 다른 방법으로 만든 기존 보드를 `--board` 로 연결할 때, 그 보드에서 Done 컬럼을 이미 지웠다면 *Item closed* 자동화가 완료를 가리키지 않을 수 있다. 그때는 보드 ⋯ → Workflows → Item closed 에서 Status 를 완료로 한 번 지정한다.

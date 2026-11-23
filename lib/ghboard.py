@@ -185,12 +185,6 @@ def set_status(num, status):
         raise GitHubError(f"보드에 '{status}' 컬럼이 없습니다 (ai-board setup 으로 다시 맞추세요)")
     set_option(card["item"], c["status_field"], opt)
     save_card(num, status=status)
-    if status == "판단필요":
-        try:
-            import notify
-            notify.needs_you(card.get("project") or "?", num, card.get("url"))
-        except Exception:       # 알림이 실패해도 카드 이동은 이미 끝났다
-            pass
 
 
 def set_review(num, level):
@@ -257,23 +251,29 @@ def rename(num, title):
     save_card(num, title=title)
 
 
-def archive_done(days=14):
+def archive_done(days=14, max_pages=10):
     """완료 칸에서 이슈가 닫힌 지 days 일 지난 카드를 보드에서 보관한다 (이슈는 그대로). 보관한 수를 돌려준다."""
     c = conf()
-    d = graphql("""query($p:ID!){ node(id:$p){ ... on ProjectV2{ items(first:100){ nodes{ id isArchived
-                   fieldValueByName(name:"Status"){ ... on ProjectV2ItemFieldSingleSelectValue{ name } }
-                   content{ ... on Issue{ number closedAt } } } } } } }""", p=c["project_id"])
     cutoff = time.time() - days * 86400
-    n = 0
-    for it in d["node"]["items"]["nodes"]:
-        st = (it.get("fieldValueByName") or {}).get("name")
-        closed = (it.get("content") or {}).get("closedAt")
-        if it.get("isArchived") or st != "완료" or not closed:
-            continue
-        if calendar.timegm(time.strptime(closed, "%Y-%m-%dT%H:%M:%SZ")) < cutoff:
-            graphql("mutation($p:ID!,$i:ID!){archiveProjectV2Item(input:{projectId:$p,itemId:$i}){item{id}}}",
-                    p=c["project_id"], i=it["id"])
-            n += 1
+    n, after = 0, None
+    for _ in range(max_pages):         # 100개씩 끊어서 전부 본다
+        d = graphql("""query($p:ID!,$a:String){ node(id:$p){ ... on ProjectV2{ items(first:100, after:$a){
+                       pageInfo{ hasNextPage endCursor } nodes{ id isArchived
+                       fieldValueByName(name:"Status"){ ... on ProjectV2ItemFieldSingleSelectValue{ name } }
+                       content{ ... on Issue{ number closedAt } } } } } } }""", p=c["project_id"], a=after)
+        items = d["node"]["items"]
+        for it in items["nodes"]:
+            st = (it.get("fieldValueByName") or {}).get("name")
+            closed = (it.get("content") or {}).get("closedAt")
+            if it.get("isArchived") or st != "완료" or not closed:
+                continue
+            if calendar.timegm(time.strptime(closed, "%Y-%m-%dT%H:%M:%SZ")) < cutoff:
+                graphql("mutation($p:ID!,$i:ID!){archiveProjectV2Item(input:{projectId:$p,itemId:$i}){item{id}}}",
+                        p=c["project_id"], i=it["id"])
+                n += 1
+        if not items["pageInfo"]["hasNextPage"]:
+            break
+        after = items["pageInfo"]["endCursor"]
     c["archived_t"] = time.time()
     aiwf.save_json(BOARD, c)
     return n
@@ -452,10 +452,6 @@ def process(q):
         journal.push(s, rest)
         q.pop("journal")
     num = card_of(sid)
-    if q.pop("detach", None) and num:     # 모드가 바뀜: 이전 모드의 카드는 그대로 두고 이 세션은 새 카드를 쓴다
-        c = cards().get(str(num), {})
-        save_card(num, sids=[x for x in (c.get("sids") or [c.get("sid")]) if x and x != sid])
-        num = None
     if q.get("fresh") and num and not q.get("bind") and not issue_open(num):
         save_card(num, status="완료")       # 사람이 웹에서 닫은 카드: 새 요청은 새 카드로
         num = None
@@ -511,7 +507,7 @@ def worker(foreground=False):
         return "이미 전송기가 돌고 있습니다"
     idle_since = time.time()
     backoff = 30
-    code = [aiwf.ROOT / "lib" / n for n in ("ghboard.py", "aiwf.py", "journal.py", "redact.py", "notify.py")]
+    code = [aiwf.ROOT / "lib" / n for n in ("ghboard.py", "aiwf.py", "journal.py", "redact.py")]
     code_t = max(f.stat().st_mtime for f in code if f.exists())
     while True:
         if max(f.stat().st_mtime for f in code if f.exists()) != code_t:
