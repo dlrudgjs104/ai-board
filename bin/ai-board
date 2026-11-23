@@ -4,12 +4,9 @@
   ai-board                        보드를 브라우저로 열기
   ai-board list                   터미널에서 보기 (실행 중인 세션 + 보드 카드)
   ai-board task "할 일" [-p 이름]   보드 Backlog 에 할 일 카드 추가 (나중에 세션에서 "#번호 진행해줘")
-  ai-board init [--name 이름] [--account 계정] [--repo 이름] [--board 번호|--board-title 제목] [--link 폴더] [-y]
-                                  초기 설정 마법사: 계정 → 기록 레포(있으면 연결, 없으면 비공개 생성) → 보드(있으면 재사용) → 프로필
-  ai-board profiles [rm 이름]      프로필(계정·레포·보드 묶음) 목록 / 연결 해제
-  ai-board link <프로필> [폴더]     이 프로젝트(폴더)가 쓸 프로필 지정 (회사/개인 계정 구분)   unlink [폴더]  /  default <프로필>
-  ai-board -P <프로필> <명령>       특정 프로필로 실행 (기본은 현재 폴더에 연결된 프로필)
-  ai-board setup <owner/repo>     (예전 명령) init 과 같음
+  ai-board init [--repo 이름] [--board 번호|--board-title 제목] [-y]
+                                  초기 설정: GitHub 계정 → 기록 레포(기존 레포 연결, 없으면 work 비공개 생성) → 보드(기존 선택, 없으면 AI Board 생성)
+  ai-board check                  기록 레포가 GitHub 에 실제로 있는지 점검 (종료코드 0 정상 · 1 없음 · 2 확인 못 함)
   ai-board status                 설정·로그인·대기열·최근 오류 점검
   ai-board close <번호> [메모]      확인 끝: 카드를 완료로 옮기고 이슈 닫기
   ai-board title <번호|--session ID> "요청 요약 > 수정된 내용"   카드 제목 바꾸기 (푸시 뒤 훅이 안내)
@@ -51,23 +48,20 @@ def need_gh():
     login = ghboard.PROFILE.get("login")
     if login:
         if subprocess.run(["gh", "auth", "token", "--user", login], capture_output=True).returncode != 0:
-            die(f"프로필 계정 {login} 이(가) gh 에 로그인되어 있지 않습니다: gh auth login -h github.com -s project")
+            die(f"연결된 계정 {login} 이(가) gh 에 로그인되어 있지 않습니다: gh auth login -h github.com -s project")
     elif subprocess.run(["gh", "auth", "status"], capture_output=True).returncode != 0:
         die("GitHub 로그인이 필요합니다: gh auth login -s project")
 
 
 def need_board():
     if not ghboard.configured():
-        die("이 폴더에 연결된 보드가 없습니다. 먼저: ai-board init   (프로필이 있다면: ai-board link <프로필>, ai-board profiles)")
+        die("연결된 보드가 없습니다. 먼저: ai-board init")
 
 
-def pick(a):
-    """명령이 다룰 프로필: -P 로 지정 > 현재 폴더의 연결 규칙 > 기본 프로필."""
-    name = getattr(a, "profile", None) or aiwf.resolve_profile(os.getcwd())
-    if getattr(a, "profile", None) and name not in aiwf.profiles_conf()["profiles"]:
-        die(f"없는 프로필: {name} (ai-board profiles)")
-    info = ghboard.use(name)
-    return name, info
+def pick(a=None):
+    """연결 정보(계정 하나·레포·보드)를 불러온다."""
+    name = aiwf.resolve_profile()
+    return name, ghboard.use(name)
 
 
 def ago(t):
@@ -123,7 +117,7 @@ def cmd_list(_):
         if not ghboard.configured():
             continue
         cards = ghboard.cards()
-        head = f"[{pn}] " if len(names) > 1 else ""
+        head = ""
         for col in ghboard.COLUMNS[:-1]:
             rows = sorted(((int(n), c) for n, c in cards.items() if c.get("status") == col), reverse=True)
             if rows:
@@ -156,79 +150,29 @@ def cmd_task(a):
 def cmd_init(a):
     import boardsetup
     try:
-        boardsetup.run_init({"profile": a.name, "account": a.account, "repo": a.repo, "create_repo": a.create_repo,
-                             "board": a.board, "board_title": a.board_title, "reset_columns": a.reset_columns,
-                             "yes": a.yes, "link": a.link, "readme": a.readme, "make_default": a.make_default})
+        boardsetup.run_init({"repo": a.repo, "create_repo": a.create_repo, "board": a.board, "board_title": a.board_title,
+                             "reset_columns": a.reset_columns, "yes": a.yes, "readme": a.readme})
     except GitHubError as e:
         die(f"설정 중 GitHub 오류: {e}")
 
 
-def cmd_setup(a):
-    """예전 명령: ai-board setup <계정/레포>. init 으로 넘긴다."""
-    import boardsetup
-    owner = a.repo.split("/")[0] if "/" in a.repo else None
-    class N: pass
-    n = N()
-    n.name, n.account = a.profile, (owner if owner in boardsetup.accounts() else None)
-    n.repo, n.create_repo, n.board, n.board_title = a.repo, a.create, a.board, None
-    n.reset_columns, n.yes, n.link, n.readme, n.make_default = a.reset_columns, False, None, False, False
-    cmd_init(n)
-
-
-def cmd_profiles(a):
-    d = aiwf.profiles_conf()
-    if a.rest[:1] == ["rm"]:
-        name = (a.rest[1:2] or [None])[0]
-        if name not in d["profiles"]:
-            die(f"없는 프로필: {name}")
-        del d["profiles"][name]
-        d["rules"] = [r for r in d["rules"] if r["profile"] != name]
-        if d["default"] == name:
-            d["default"] = next(iter(d["profiles"]), None)
-        aiwf.save_profiles(d)
-        print(f"프로필 '{name}' 연결을 지웠습니다 (GitHub 의 레포·보드와 로컬 카드 기록은 그대로 남아 있음).")
-        return
-    if not d["profiles"]:
-        print("프로필이 없습니다. 먼저: ai-board init")
-        return
-    here = aiwf.resolve_profile(os.getcwd())
-    for n, p in d["profiles"].items():
-        mark = "←  이 폴더" if n == here else ""
-        print(f"{'*' if n == d['default'] else ' '} {n:<12} 계정 {p.get('login')} · 레포 {p.get('repo')} · 보드 #{p.get('board')} {p.get('board_title') or ''} {mark}")
-    if d["rules"]:
-        print("\n폴더 연결:")
-        for r in d["rules"]:
-            print(f"   {r['path']}  →  {r['profile']}")
-    print("\n* = 기본 프로필 (연결 규칙이 없는 폴더에 적용). 연결: ai-board link <프로필> [폴더] · 기본 변경: ai-board default <프로필>")
-
-
-def cmd_default(a):
-    d = aiwf.profiles_conf()
-    if a.name not in d["profiles"]:
-        die(f"없는 프로필: {a.name} (ai-board profiles)")
-    d["default"] = a.name
-    aiwf.save_profiles(d)
-    print(f"기본 프로필: {a.name}")
-
-
-def cmd_link(a):
-    import boardsetup
-    d = aiwf.profiles_conf()
-    if a.name not in d["profiles"]:
-        die(f"없는 프로필: {a.name} (ai-board profiles)")
-    path = a.path or aiwf.project_of(os.getcwd())[1]
-    boardsetup.add_rule(d, path, a.name)
-    aiwf.save_profiles(d)
-    print(f"연결: {path} 아래 → 프로필 {a.name}  (이미 열려 있는 세션은 다음 세션부터 적용)")
-
-
-def cmd_unlink(a):
-    d = aiwf.profiles_conf()
-    path = os.path.abspath(os.path.expanduser(a.path)) if a.path else aiwf.project_of(os.getcwd())[1]
-    n = len(d["rules"])
-    d["rules"] = [r for r in d["rules"] if os.path.abspath(os.path.expanduser(r["path"])) != path]
-    aiwf.save_profiles(d)
-    print("연결을 풀었습니다." if len(d["rules"]) < n else f"연결 규칙이 없습니다: {path}")
+def cmd_check(_):
+    """기록 레포가 GitHub 에 실제로 있는지 본다. 출력: 'OK|MISSING|UNKNOWN <계정> <레포>'"""
+    d = aiwf.profiles_conf()["profiles"]
+    if not d:
+        print("MISSING  (설정 없음) → ai-board init")
+        sys.exit(1)
+    name, p = next(iter(d.items()))
+    ghboard.use(name)
+    try:
+        ghboard.rest("GET", f"repos/{p.get('repo')}")
+        print(f"OK       {p.get('login')} {p.get('repo')}")
+    except GitHubError as e:
+        if "Not Found" in str(e) or "404" in str(e):
+            print(f"MISSING  {p.get('login')} {p.get('repo')}")
+            sys.exit(1)
+        print(f"UNKNOWN  {p.get('login')} {p.get('repo')}  ({str(e)[:80]})")
+        sys.exit(2)
 
 
 def cmd_status(_):
@@ -242,14 +186,14 @@ def cmd_status(_):
         print(f"GitHub 계정 : {', '.join(accs) or '로그인 안 됨 → gh auth login -s project'}")
     d = aiwf.profiles_conf()
     if not d["profiles"]:
-        print("프로필      : 없음 → ai-board init")
+        print("연결        : 없음 → ai-board init")
     for n, p in d["profiles"].items():
         ghboard.use(n)
         c = ghboard.conf()
         warn = "" if p.get("login") in accs or not accs else "  ! 이 계정이 gh 에 로그인되어 있지 않음"
-        print(f"\n[프로필 {n}]{' (기본)' if n == d['default'] else ''}  계정 {p.get('login')} · 레포 {p.get('repo')}{warn}")
-        print(f"  보드  : {c.get('url') or '미설정'}")
-        print(f"  카드  : {len(ghboard.cards())}개 기록됨")
+        print(f"계정·레포   : {p.get('login')} · {p.get('repo')}{warn}")
+        print(f"보드        : {c.get('url') or '미설정'}")
+        print(f"카드        : {len(ghboard.cards())}개 기록됨")
     left = ghboard.pending()
     print(f"\n대기열      : {len(left)}건{' (ai-board flush 로 지금 보내기)' if left else ''}")
     rec = aiwf.STATE / "records"
@@ -279,7 +223,7 @@ def cmd_close(a):
 def cmd_title(a):
     if a.session:
         s = aiwf.load_json(aiwf.session_file(a.session), {})
-        ghboard.use(s.get("profile") or aiwf.resolve_profile(s.get("path") or os.getcwd()))
+        ghboard.use(s.get("profile") or aiwf.resolve_profile())
     else:
         pick(a)
     need_board()
@@ -365,26 +309,18 @@ def cmd_flush(_):
 
 def main():
     ap = argparse.ArgumentParser(prog="ai-board", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("-P", "--profile", help="다룰 프로필 (기본: 현재 폴더에 연결된 프로필 → 기본 프로필)")
     sub = ap.add_subparsers(dest="cmd")
     for c in ("open", "list", "status", "flush", "worker"):
         sub.add_parser(c)
-    ini = sub.add_parser("init", help="초기 설정: 계정 → 기록 레포 → 보드 → 프로필")
-    ini.add_argument("--name", help="프로필 이름"); ini.add_argument("--account", help="사용할 GitHub 계정 (gh 로그인된 계정)")
-    ini.add_argument("--repo", help="기록 레포 (이름 또는 owner/이름). 있으면 연결, 없으면 --create-repo 로 비공개 생성")
+    ini = sub.add_parser("init", help="초기 설정: 계정 → 기록 레포 → 보드")
+    ini.add_argument("--repo", help="기록 레포 (이름 또는 owner/이름). 있으면 연결, 없으면 비공개 생성 (기본 work)")
     ini.add_argument("--create-repo", action="store_true"); ini.add_argument("--board", type=int, help="기존 보드 번호")
     ini.add_argument("--board-title", help="보드 이름 (같은 이름이 있으면 재사용, 없으면 새로 만듦)")
     ini.add_argument("--reset-columns", action="store_true"); ini.add_argument("--yes", "-y", action="store_true", help="묻지 않고 기본값")
-    ini.add_argument("--link", help="이 프로필을 적용할 프로젝트(상위) 폴더"); ini.add_argument("--readme", action="store_true", help="레포 설명서를 최신으로 덮어쓰기")
-    ini.add_argument("--make-default", action="store_true", help="기본 프로필로 지정")
-    pr = sub.add_parser("profiles"); pr.add_argument("rest", nargs="*")
-    df = sub.add_parser("default"); df.add_argument("name")
-    lk = sub.add_parser("link"); lk.add_argument("name"); lk.add_argument("path", nargs="?")
-    ul = sub.add_parser("unlink"); ul.add_argument("path", nargs="?")
+    ini.add_argument("--readme", action="store_true", help="레포 설명서를 최신으로 덮어쓰기")
+    sub.add_parser("check")
     t = sub.add_parser("task"); t.add_argument("text", nargs="+"); t.add_argument("-p")
     t.add_argument("--status", default="Backlog", choices=ghboard.COLUMNS[:-1])
-    s = sub.add_parser("setup"); s.add_argument("repo"); s.add_argument("--create", action="store_true")
-    s.add_argument("--board", type=int); s.add_argument("--reset-columns", action="store_true")
     for c in ("off", "on", "personal", "work", "skip"):
         sub.add_parser(c)
     sub.add_parser("now")
@@ -400,8 +336,8 @@ def main():
     else:
         {"open": cmd_open, None: cmd_open, "list": cmd_list, "status": cmd_status, "flush": cmd_flush,
          "off": cmd_switch, "on": cmd_switch, "personal": cmd_switch, "work": cmd_switch, "skip": cmd_switch, "now": cmd_now,
-         "init": cmd_init, "profiles": cmd_profiles, "default": cmd_default, "link": cmd_link, "unlink": cmd_unlink,
-         "task": cmd_task, "setup": cmd_setup, "close": cmd_close, "title": cmd_title, "archive": cmd_archive}[a.cmd](a)
+         "init": cmd_init, "check": cmd_check,
+         "task": cmd_task, "close": cmd_close, "title": cmd_title, "archive": cmd_archive}[a.cmd](a)
 
 
 if __name__ == "__main__":

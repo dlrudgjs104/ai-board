@@ -18,7 +18,7 @@ from pathlib import Path
 
 import aiwf
 
-# 아래 세 경로는 use(프로필) 로 바뀐다. 프로필마다 보드·카드·대기열이 따로다 (aiwf.profile_dir)
+# 아래 세 경로는 use() 로 정해진다 (aiwf.profile_dir). 계정 하나만 쓰므로 실제로는 'default' 한 칸이다
 BOARD = aiwf.STATE / "_none" / "board.json"      # 보드·필드·옵션 ID
 CARDS = aiwf.STATE / "_none" / "cards.json"      # 이슈 번호 → {item, sid, project, status, title, url, body_t}
 QUEUE = aiwf.STATE / "_none" / "queue"

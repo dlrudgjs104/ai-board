@@ -7,6 +7,8 @@
 - 꺼짐(off)·건너뛰기(skip) 요청은 기록하지 않는다 (훅이 호출하지 않음)
 """
 import base64
+import datetime
+import json
 import re
 import secrets
 import socket
@@ -17,6 +19,7 @@ from pathlib import Path
 import aiwf
 
 RECORDS = aiwf.STATE / "records"
+FULL = 100_000     # 증적용이라 요청·답변은 사실상 자르지 않는다 (비정상적으로 긴 것만 방어)
 
 
 def _t(x):
@@ -51,7 +54,7 @@ def turns(s: dict) -> list:
 
 
 def new_turn(s: dict, text: str, mode: str):
-    turns(s).append({"t": aiwf.now(), "mode": mode, "request": (text or "").strip()[:2000],
+    turns(s).append({"t": aiwf.now(), "mode": mode, "request": (text or "").strip()[:FULL],
                      "decisions": [], "files": [], "commits": [], "report": ""})
     del s["journal"][:-200]
 
@@ -103,11 +106,61 @@ def parse_decisions(msg: str) -> list:
     return [d for d in dict.fromkeys(out) if d and d != "(없음)" and d != "없음"][:20]
 
 
-def finish_turn(s: dict, msg: str):
+TOOL_KEYS = ("command", "file_path", "pattern", "path", "url", "query", "description", "prompt", "skill", "notebook_path")
+
+
+def _iso(ts) -> float:
+    try:
+        return datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _tool_line(b: dict) -> str:
+    name, inp = b.get("name", "?"), b.get("input") or {}
+    if name == "AskUserQuestion":
+        qs = [q.get("question", "") for q in inp.get("questions") or []]
+        return f"{name}: " + " / ".join(aiwf.short(q, 160) for q in qs)
+    for k in TOOL_KEYS:
+        if inp.get(k):
+            return f"{name}: {aiwf.short(str(inp[k]), 300)}"
+    return f"{name}: {aiwf.short(json.dumps(inp, ensure_ascii=False), 200)}" if inp else name
+
+
+def collect_steps(path, since: float) -> list:
+    """대화 기록(transcript, jsonl)에서 since(epoch 초) 이후 이 요청에 대한 AI 의 모든 답변 글과 도구 호출을 순서대로 뽑는다.
+    생각(thinking)·도구 결과 원문은 제외한다. 읽지 못하면 빈 목록."""
+    out = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if d.get("type") != "assistant" or d.get("isSidechain") or _iso(d.get("timestamp")) < since - 1:
+                    continue
+                cont = (d.get("message") or {}).get("content")
+                for b in cont if isinstance(cont, list) else []:
+                    if b.get("type") == "text" and (b.get("text") or "").strip():
+                        out.append({"k": "text", "v": b["text"].strip()[:FULL]})
+                    elif b.get("type") == "tool_use":
+                        out.append({"k": "tool", "v": _tool_line(b)})
+    except OSError:
+        return []
+    return out[-500:]
+
+
+def finish_turn(s: dict, msg: str, transcript=None):
     c = cur(s)
     if c is None:
         return
-    c["report"] = aiwf.short_lines(msg or "", 3000)
+    c["report"] = aiwf.short_lines(msg or "", FULL)
+    if transcript:
+        steps = collect_steps(transcript, c.get("t") or 0)
+        if steps and steps[-1]["k"] == "text" and steps[-1]["v"] == (msg or "").strip():
+            steps.pop()          # 마지막 답변은 '결과 보고' 에 따로 실리므로 중복 제거
+        c["steps"] = steps
     for d in parse_decisions(msg):
         add_decision(s, d)
     c["done_t"] = aiwf.now()
@@ -119,7 +172,7 @@ def render(s: dict) -> str:
     lines = [marker(s), "", f"# {s.get('project')} 작업 일지 — {time.strftime('%Y-%m-%d %H:%M', time.localtime(started))}", "",
              f"- 세션: `{s.get('id', '')[:8]}` · PC: `{socket.gethostname()}`"
              + (f" · 브랜치: `{s['branch']}`" if s.get("branch") else ""),
-             f"- 경로: `{s.get('path')}`", "- 자동 기록 (ai-workflow). 요청·결정·반영 순서로 정리됨", ""]
+             f"- 경로: `{s.get('path')}`", "- 자동 기록 (ai-workflow). 요청 → 결정 → 반영 → 진행 과정(AI 답변·도구 호출 전체) → 결과 보고", ""]
     for n, t in enumerate(turns(s), 1):
         lines += [f"## {n}. {_t(t['t'])} 요청 · 모드 {t.get('mode')}", ""]
         lines += ["> " + l for l in (t.get("request") or "(내용 없음)").splitlines()] + [""]
@@ -131,8 +184,16 @@ def render(s: dict) -> str:
         if not t["files"] and not t["commits"]:
             lines.append("- (파일 변경·커밋 없음)")
         lines.append("")
+        if t.get("steps"):
+            lines += ["**진행 과정 (AI 답변·도구 호출 전체)**", ""]
+            for st in t["steps"]:
+                if st["k"] == "tool":
+                    lines.append(f"- 🔧 `{st['v'].replace(chr(10), ' ')}`")
+                else:
+                    lines += [""] + ["> " + l for l in st["v"].splitlines()] + [""]
+            lines.append("")
         if t.get("report"):
-            lines += ["**결과 보고**", ""] + ["> " + l for l in aiwf.short_lines(t["report"], 1500).splitlines()] + [""]
+            lines += ["**결과 보고**", ""] + ["> " + l for l in t["report"].splitlines()] + [""]
         elif not t.get("done_t"):
             lines += ["_(진행 중이거나 답변 전에 종료됨)_", ""]
     return "\n".join(lines)

@@ -372,7 +372,7 @@ def main():
                              ensure_ascii=False))
             return 0
         if mode != "lite":
-            journal.finish_turn(s, msg)
+            journal.finish_turn(s, msg, data.get("transcript_path"))
             journal.write_local(s)
             jpush = True
         q = looks_question(msg)

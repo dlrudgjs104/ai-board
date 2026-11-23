@@ -37,18 +37,17 @@ gh auth login -s project     # GitHub.com → HTTPS → 브라우저 인증, 본
 gh auth status               # Token scopes 에 'project' 확인
 ```
 
-## 3. 기록 레포 + 보드 (프로필)
-프로필 = 계정 하나 + 기록 레포 하나 + 보드 하나. 카드(이슈)와 작업 일지(`records/`)가 기록 레포에 쌓인다.
+## 3. 기록 레포 + 보드
+계정은 로그인한 GitHub 계정 하나만 쓴다. 카드(이슈)와 작업 일지(`records/`)가 기록 레포에 쌓이고, 카드는 보드 하나에 모인다.
 ```bash
-ai-board init                                 # 마법사: 계정 선택 → 레포 이름 → 보드 → (선택) 적용할 폴더
+ai-board init                                 # 마법사: 기록 레포(기존 레포 이름, 엔터면 work 사용·생성) → 보드(번호로 선택, 엔터면 AI Board 사용·생성)
 ai-board init --repo ai-log --board-title "내 보드"          # 이름 지정. 레포·보드가 이미 있으면 연결, 없으면 만듦
 ai-board init --board 3 --repo owner/repo     # 이미 있는 보드(팀 보드 등)를 번호로 연결
-ai-board profiles                             # 연결된 프로필 확인
-ai-board status                               # 로그인·보드·대기열·최근 오류
+ai-board status                               # 로그인·레포·보드·대기열·최근 오류
 ```
-**회사 계정과 개인 계정을 따로 쓸 때:** 계정마다 `gh auth login -h github.com -s project` (브라우저에서 해당 계정으로 승인) 후 `ai-board init --name company --account 회사계정 --link ~/company` 처럼 한 번씩 실행한다. 그러면 `~/company` 아래 프로젝트는 회사 계정의 레포·보드에, 나머지는 기본 프로필에 기록된다. 폴더 연결은 `ai-board link <프로필> [폴더]` 로 나중에도 바꿀 수 있고, 프로젝트 레포에는 아무 파일도 생기지 않는다.
+다른 GitHub 계정으로 바꾸려면 `gh auth login -h github.com -s project`(또는 `gh auth switch`)로 그 계정을 활성화한 뒤 `ai-board init` 을 다시 실행한다. 프로젝트 레포에는 아무 파일도 생기지 않는다.
 
-새로 만든 레포에는 `README.md`(작동 방식 설명서)가 들어간다. 이미 있던 레포에는 기존 파일을 건드리지 않고 `AI-WORKFLOW.md` 만 추가한다.
+설명서는 레포 첫 화면에 보이도록 `README.md` 로 올라간다. 새 레포나 비어 있는 README 는 대체하고, 직접 쓴 README 가 있으면 건드리지 않고 `AI-WORKFLOW.md` 로 올린다.
 
 ## 4. 자동으로 설정되는 것
 - **이슈 닫힘 ↔ 완료:** `init` 이 새 보드의 기본 컬럼(Todo/In Progress/Done)을 ID 를 유지한 채 Backlog/AI작업중/완료 로 이름만 바꾼다. 그래서 GitHub 기본 자동화가 그대로 동작한다.

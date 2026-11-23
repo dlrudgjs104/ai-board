@@ -20,7 +20,7 @@ STATE = Path(os.environ.get("AI_WORKFLOW_STATE") or Path.home() / ".ai-workflow"
 SESSIONS = STATE / "sessions"
 EVENTS = STATE / "events.jsonl"
 PROJECTS = STATE / "projects.json"
-PROFILES = STATE / "profiles.json"   # 프로필(계정·레포·보드 묶음) 목록, 기본 프로필, 폴더 규칙
+PROFILES = STATE / "profiles.json"   # 연결 정보: GitHub 계정·기록 레포·보드
 RUNS = STATE / "runs"       # 런처 실행 하나(= claude 프로세스 하나)마다 상태 파일: 모드 전환·끄기·건너뛰기
 
 SECTIONS = [("🔴", "판단 필요"), ("🟡", "진행 중"), ("🟢", "완료 · 검토 대기"), ("⚪", "예정")]
@@ -239,54 +239,46 @@ def prune_runs(days=7):
                 pass
 
 
-# ---------------------------------------------------------------- 프로필 (계정·기록 레포·보드 묶음)
-# profiles.json: {"default": 이름, "profiles": {이름: {login, owner, repo, board, board_title}},
-#                 "rules": [{"path": 폴더, "profile": 이름}]}
-# 프로필마다 STATE/profiles/<이름>/ 에 board.json · cards.json · queue/ 가 따로 있다 (이슈 번호가 계정마다 겹쳐도 안전)
+# ---------------------------------------------------------------- 연결 정보 (GitHub 계정 하나 · 기록 레포 하나 · 보드 하나)
+# profiles.json: {"profiles": {"default": {login, owner, repo, board, board_title}}}
+# 계정은 하나만 쓴다. 'default' 한 칸에 board.json · cards.json · queue/ 가 STATE/profiles/default/ 로 저장된다.
+# (예전 다중 프로필 구조와 파일 위치를 그대로 써서, 이미 설정된 사용자의 기록이 그대로 이어진다)
+SLOT = "default"
+
+
 def profile_dir(name: str) -> Path:
     return STATE / "profiles" / name
 
 
 def _migrate_legacy():
-    """예전 단일 보드 설정(STATE/board.json 등)을 프로필 'default' 로 옮긴다."""
+    """예전 단일 보드 설정(STATE/board.json 등)을 'default' 칸으로 옮긴다."""
     old = STATE / "board.json"
     if PROFILES.exists() or not old.exists():
         return
     b = load_json(old, {})
-    d = profile_dir("default")
+    d = profile_dir(SLOT)
     d.mkdir(parents=True, exist_ok=True)
     for n in ("board.json", "cards.json", "queue"):
         if (STATE / n).exists():
             os.replace(STATE / n, d / n)
-    save_json(PROFILES, {"default": "default", "rules": [], "profiles": {
-        "default": {"login": b.get("owner"), "owner": b.get("owner"), "repo": b.get("repo"), "board": b.get("number")}}})
+    save_json(PROFILES, {"profiles": {
+        SLOT: {"login": b.get("owner"), "owner": b.get("owner"), "repo": b.get("repo"), "board": b.get("number")}}})
 
 
 def profiles_conf() -> dict:
     _migrate_legacy()
     d = load_json(PROFILES, {})
     d.setdefault("profiles", {})
-    d.setdefault("rules", [])
-    d.setdefault("default", None)
     return d
 
 
 def save_profiles(d: dict):
-    save_json(PROFILES, d)
+    save_json(PROFILES, {"profiles": d.get("profiles", {})})
 
 
-def resolve_profile(path: str):
-    """프로젝트 경로 → 프로필 이름. 가장 긴 폴더 규칙이 이기고, 없으면 기본 프로필, 프로필이 하나뿐이면 그것."""
-    d = profiles_conf()
-    best = None
-    p = str(Path(path).resolve()) if path else ""
-    for r in d["rules"]:
-        base = str(Path(os.path.expanduser(r["path"])).resolve())
-        if r["profile"] in d["profiles"] and (p == base or p.startswith(base + os.sep)):
-            if best is None or len(base) > best[0]:
-                best = (len(base), r["profile"])
-    if best:
-        return best[1]
-    if d["default"] in d["profiles"]:
-        return d["default"]
-    return next(iter(d["profiles"])) if len(d["profiles"]) == 1 else None
+def resolve_profile(path=None):
+    """연결 정보가 있으면 항상 그 하나('default'), 없으면 None. (path 는 예전 호출과의 호환용으로만 받는다)"""
+    d = profiles_conf()["profiles"]
+    if SLOT in d:
+        return SLOT
+    return next(iter(d), None)

@@ -1,9 +1,9 @@
-"""초기 설정 마법사: GitHub 계정 → 기록 레포 → 보드 → 프로필 저장. `ai-board init` 이 호출한다.
+"""초기 설정 마법사: GitHub 계정 → 기록 레포 → 보드. `ai-board init` 이 호출한다.
 
-프로필 = 계정 하나 + 기록 레포 하나 + 보드 하나. 회사 계정과 개인 계정을 따로 운영하려면 프로필을 둘 만든다.
-- 계정: gh 에 로그인된 계정 중에서 고른다 (계정 추가는 gh auth login)
-- 레포·보드: 이름은 자유. 이미 있으면 새로 만들지 않고 연결한다 (기존 AI Board 재사용)
-- 새로 만든 레포에는 작동 방식을 설명하는 README.md 를 넣는다 (기존 레포는 건드리지 않고 AI-WORKFLOW.md 만 추가)
+계정은 gh 에 로그인된(활성) 계정 하나만 쓴다.
+- 기록 레포: 기존 레포 이름을 물어보고, 없으면 `work`(비공개)를 기본으로 만든다. 카드는 이 레포의 이슈로 쌓인다.
+- 보드: 기존 보드를 고르고, 없으면 `AI Board` 를 새로 만든다.
+- 설명서는 README.md 로 올린다 (직접 쓴 README 가 있으면 건드리지 않고 AI-WORKFLOW.md 로)
 """
 import base64
 import json
@@ -28,18 +28,37 @@ def interactive(opts):
     return sys.stdin.isatty() and not opts.get("yes")
 
 
-def ask(opts, prompt, default=None):
+def ask(opts, prompt, default=None, valid=None, hint=""):
+    """한 줄 입력. valid(값) 이 False 면 hint 를 보여 주고 다시 묻는다. 엔터는 기본값, 입력이 끊기면(EOF) 기본값."""
     if not interactive(opts):
         return default
-    s = input(f"  ? {prompt}" + (f" [{default}]" if default else "") + ": ").strip()
-    return s or default
+    while True:
+        try:
+            s = input(f"  ? {prompt}" + (f" [{default}]" if default else "") + ": ").strip()
+        except EOFError:
+            return default
+        s = s or default
+        if valid is None or valid(s):
+            return s
+        say(f"    {hint or '올바른 값이 아닙니다.'}")
 
 
 def confirm(opts, prompt, default=True):
+    """예/아니오. y·yes·예·네 / n·no·아니오·아니 만 받고, 그 밖의 입력은 다시 묻는다. 엔터는 기본값."""
     if not interactive(opts):
         return default if opts.get("yes") else False
-    s = input(f"  ? {prompt} [{'Y/n' if default else 'y/N'}] ").strip().lower()
-    return default if not s else s.startswith("y")
+    while True:
+        try:
+            s = input(f"  ? {prompt} [{'Y/n' if default else 'y/N'}] ").strip().lower()
+        except EOFError:
+            return default
+        if not s:
+            return default
+        if s in ("y", "yes", "예", "네"):
+            return True
+        if s in ("n", "no", "아니오", "아니"):
+            return False
+        say("    y 또는 n 으로 입력해 주세요.")
 
 
 def gh(login, *args, inp=None):
@@ -58,30 +77,22 @@ def scopes(login):
     return [x.strip() for x in m.group(1).split(",") if x.strip()] if m else None   # None: 확인 불가(세분화 토큰 등)
 
 
-def pick_account(opts):
-    accs = accounts()
-    if not accs:
-        raise SystemExit("GitHub 에 로그인된 계정이 없습니다. 먼저: gh auth login -h github.com -s project")
-    want = opts.get("account")
-    if want:
-        if want not in accs:
-            raise SystemExit(f"{want} 계정은 gh 에 로그인되어 있지 않습니다 (로그인된 계정: {', '.join(accs)}).\n"
-                             f"  추가하려면: gh auth login -h github.com -s project   (브라우저에서 해당 계정으로 승인)")
-        return want
-    if len(accs) == 1:
-        say(f"계정: {accs[0]}")
-        return accs[0]
-    if not interactive(opts):
-        raise SystemExit(f"로그인된 계정이 여럿입니다({', '.join(accs)}). --account 로 고르세요.")
-    say("로그인된 GitHub 계정:")
-    for i, a in enumerate(accs, 1):
-        say(f"   {i}) {a}")
-    say("   (다른 계정을 쓰려면 이 마법사를 끝낸 뒤 gh auth login 으로 추가하고 다시 실행)")
-    n = ask(opts, "사용할 계정 번호", "1")
-    try:
-        return accs[int(n) - 1]
-    except (ValueError, IndexError):
-        raise SystemExit("올바른 번호가 아닙니다")
+def current_account(opts):
+    """GitHub 로그인 계정 하나. 로그인이 안 돼 있으면 대화형일 때 바로 로그인시킨다."""
+    if not accounts():
+        if not interactive(opts):
+            raise SystemExit("GitHub 에 로그인되어 있지 않습니다. 먼저: gh auth login -h github.com -s project")
+        say("GitHub 로그인이 필요합니다. 표시되는 코드를 브라우저(https://github.com/login/device)에 입력해 승인하세요.")
+        subprocess.run(["gh", "auth", "login", "-h", "github.com", "-p", "https", "-w", "-s", "project"])
+        if not accounts():
+            raise SystemExit("로그인하지 못했습니다. 직접 실행: gh auth login -h github.com -s project")
+    r = subprocess.run(["gh", "api", "user", "-q", ".login"], capture_output=True, text=True)
+    if r.returncode != 0 or not r.stdout.strip():
+        raise SystemExit(f"로그인 계정을 확인하지 못했습니다: {r.stderr.strip()[:200]}")
+    login = r.stdout.strip()
+    others = [x for x in accounts() if x != login]
+    say(f"GitHub 계정: {login}" + (f"  (gh 에 로그인된 다른 계정 {', '.join(others)} 은 쓰지 않음. 바꾸려면 gh auth switch)" if others else ""))
+    return login
 
 
 def put_file(repo, path, text, message, overwrite=True):
@@ -97,6 +108,29 @@ def put_file(repo, path, text, message, overwrite=True):
             raise
     ghboard.rest("PUT", url, body)
     return True
+
+
+README_MARK = "<!-- ai-workflow:readme -->"
+
+
+def readme_target(repo, force=False):
+    """설명서를 README.md 로 올릴 수 있는지 정한다 → (파일 이름, 덮어써도 되는지, 이유).
+    README.md 가 없거나, 이 도구가 만든 것이거나, 레포 생성 때 자동으로 생긴 짧은 것이면 README.md 를 쓴다.
+    직접 쓴 README 가 있으면 건드리지 않고 AI-WORKFLOW.md 로 비켜 간다 (--readme 로 강제 덮어쓰기)."""
+    try:
+        cur = ghboard.rest("GET", f"repos/{repo}/contents/README.md")
+    except GitHubError as e:
+        if "Not Found" in str(e) or "404" in str(e):
+            return "README.md", True, "새로 만듦"
+        raise
+    old = base64.b64decode(cur.get("content") or "").decode("utf-8", "replace")
+    if force:
+        return "README.md", True, "강제 덮어쓰기"
+    if README_MARK in old:
+        return "README.md", True, "이 도구가 만든 설명서를 갱신"
+    if len(old.strip()) < 300:
+        return "README.md", True, "비어 있던(자동 생성된) README 를 대체"
+    return "AI-WORKFLOW.md", False, "직접 쓴 README 가 있어 건드리지 않음"
 
 
 def render_readme(info: dict) -> str:
@@ -139,48 +173,49 @@ def ensure_layout(owner, number, repo, login, fresh, reset):
 
 
 def run_init(opts: dict) -> str:
-    """프로필을 만들거나 갱신하고 이름을 돌려준다. opts: profile account repo create_repo board board_title
-    reset_columns yes link readme"""
+    """연결 정보를 만들거나 갱신한다. opts: repo create_repo board board_title reset_columns yes readme"""
     if subprocess.run(["which", "gh"], capture_output=True).returncode != 0:
         raise SystemExit("GitHub CLI(gh) 가 없습니다. ./install.sh --board 로 설치하세요.")
     conf = aiwf.profiles_conf()
     say("== ai-workflow 초기 설정 ==")
-    login = pick_account(opts)
+    login = current_account(opts)
     sc = scopes(login)
     if sc is not None and "project" not in sc:
         raise SystemExit(f"{login} 계정에 project 권한이 없습니다 (보드에 필요).\n"
-                         f"  gh auth switch -h github.com -u {login} && gh auth refresh -h github.com -s project")
+                         f"  gh auth refresh -h github.com -s project")
     ghboard.PROFILE.update(name=None, login=login)
-
-    # 1) 프로필 이름
-    first = not conf["profiles"]
-    name = opts.get("profile") or ask(opts, "프로필 이름 (회사/개인 구분용)", "default" if first else login)
-    name = re.sub(r"[^\w.-]+", "-", name or login).strip("-") or login
+    name = aiwf.SLOT
     if name in conf["profiles"]:
-        say(f"프로필 '{name}' 이(가) 이미 있어 설정을 갱신합니다.")
+        old = conf["profiles"][name]
+        say(f"이미 연결돼 있습니다 (레포 {old.get('repo')} · 보드 #{old.get('board')}). 설정을 다시 고릅니다.")
 
-    # 2) 기록 레포: 이름 자유, 있으면 연결, 없으면 비공개로 생성
-    repo = opts.get("repo") or ask(opts, "기록 레포 이름 (카드·일지가 쌓일 비공개 레포)", DEFAULT_REPO)
+    # 1) 기록 레포: 기존 레포 이름을 묻고, 비우면 work 를 기본으로 (없으면 비공개로 생성)
+    repo = opts.get("repo")
+    if not repo:
+        say(f"기록 레포: 작업 카드(이슈)와 일지가 쌓일 비공개 레포입니다.")
+        repo = ask(opts, f"기존에 연결할 레포 이름 (없으면 엔터 → {DEFAULT_REPO} 레포 사용·생성)", "") or DEFAULT_REPO
     repo = repo if "/" in repo else f"{login}/{repo}"
     owner, rname = repo.split("/", 1)
-    created = False
     try:
         info = ghboard.rest("GET", f"repos/{repo}")
         say(f"기록 레포: {repo} ({'비공개' if info.get('private') else '공개'}) — 기존 레포에 연결")
         if not info.get("private"):
             say("  ! 공개 레포입니다. 요청 원문과 일지가 공개되니 비공개 레포를 권합니다.")
+        if info.get("has_issues") is False:   # 카드는 이슈라서 꺼져 있으면 켠다
+            ghboard.rest("PATCH", f"repos/{repo}", {"has_issues": True})
+            say("  이슈 기능이 꺼져 있어 켰습니다 (카드가 이슈로 만들어집니다)")
     except GitHubError as e:
         if "Not Found" not in str(e) and "404" not in str(e):
             raise SystemExit(f"기록 레포를 확인하지 못했습니다: {e}")
-        if not (opts.get("create_repo") or confirm(opts, f"{repo} 가 없습니다. 비공개 레포로 만들까요?")):
+        if not (opts.get("create_repo") or rname == DEFAULT_REPO and not interactive(opts)
+                or confirm(opts, f"{repo} 가 없습니다. 비공개 레포로 만들까요?")):
             raise SystemExit(f"기록 레포 {repo} 가 없습니다. 만들려면: ai-board init --repo {repo} --create-repo")
         ghboard.rest("POST", "user/repos" if owner == login else f"orgs/{owner}/repos",
-                     {"name": rname, "private": True, "auto_init": True,
+                     {"name": rname, "private": True, "auto_init": True, "has_issues": True,
                       "description": "AI 작업 기록 (ai-workflow): 카드·작업 일지"})
-        created = True
         say(f"기록 레포 생성: {repo} (비공개)")
 
-    # 3) 보드: 번호나 제목으로 기존 보드 재사용, 없으면 새로 만든다
+    # 2) 보드: 기존 보드를 고르거나, 없으면 AI Board 를 새로 만든다
     boards = list_boards(owner, login)
     number, title, fresh = opts.get("board"), opts.get("board_title"), False
     if number:
@@ -192,8 +227,12 @@ def run_init(opts: dict) -> str:
             say("보드 목록:")
             for b in boards:
                 say(f"   #{b['number']}  {b['title']}")
-            say("   (번호를 입력하면 그 보드를 연결, 새 이름을 입력하면 새로 만듦)")
-            ans = ask(opts, "보드 번호 또는 새 보드 이름", f"#{same[0]['number']}" if same else DEFAULT_BOARD)
+            say(f"   (번호를 입력하면 그 보드를 연결, 엔터면 {'#' + str(same[0]['number']) if same else DEFAULT_BOARD}"
+                f"{'' if same else ' 를 새로 만듦'}, 새 이름을 입력하면 그 이름으로 새로 만듦)")
+            nums = {b["number"] for b in boards}
+            ans = ask(opts, "보드 번호 또는 새 보드 이름", f"#{same[0]['number']}" if same else DEFAULT_BOARD,
+                      valid=lambda v: bool(v) and (not re.fullmatch(r"#?\d+", v) or int(v.lstrip("#")) in nums),
+                      hint="목록에 있는 보드 번호이거나, 새로 만들 보드 이름(숫자만은 불가)이어야 합니다.")
             if re.fullmatch(r"#?\d+", ans or ""):
                 number = int(ans.lstrip("#"))
             else:
@@ -216,10 +255,8 @@ def run_init(opts: dict) -> str:
     else:
         say(f"보드 사용: #{number}" + (f" {title}" if title else ""))
 
-    # 4) 프로필 저장 → 보드 ID 저장 → 컬럼 맞춤
-    conf["profiles"][name] = {"login": login, "owner": owner, "repo": repo, "board": int(number), "board_title": title or ""}
-    if first or not conf["default"] or opts.get("make_default"):
-        conf["default"] = name
+    # 3) 저장 → 보드 ID 저장 → 컬럼 맞춤
+    conf["profiles"] = {name: {"login": login, "owner": owner, "repo": repo, "board": int(number), "board_title": title or ""}}
     aiwf.save_profiles(conf)
     ghboard.use(name)
     ensure_layout(owner, number, repo, login, fresh, opts.get("reset_columns"))
@@ -230,33 +267,15 @@ def run_init(opts: dict) -> str:
     conf["profiles"][name]["board_title"] = c["title"]
     aiwf.save_profiles(conf)
 
-    # 5) 기록 레포 설명서: 새 레포는 README.md, 기존 레포는 건드리지 않고 AI-WORKFLOW.md (이미 있으면 그대로)
-    text = render_readme({"profile": name, "login": login, "repo": repo, "board_url": data["url"], "board_title": c["title"]})
+    # 4) 기록 레포 설명서: 레포에 들어가자마자 보이도록 README.md 로. 직접 쓴 README 가 있으면 AI-WORKFLOW.md 로 비켜 간다
+    text = render_readme({"login": login, "repo": repo, "board_url": data["url"], "board_title": c["title"]})
     try:
-        target = "README.md" if created else "AI-WORKFLOW.md"
-        wrote = put_file(repo, target, text, "docs: ai-workflow 설명서", overwrite=created or bool(opts.get("readme")))
-        say(f"설명서: {repo}/{target}" + ("" if wrote else " (이미 있어 그대로 둠, 갱신은 --readme)"))
+        target, ok, why = readme_target(repo, force=bool(opts.get("readme")))
+        put_file(repo, target, text, "docs: ai-workflow 설명서", overwrite=True)
+        say(f"설명서: {repo}/{target} ({why})" + ("" if ok else " — README.md 로 바꾸려면 --readme"))
     except GitHubError as e:
         say(f"  ! 설명서를 올리지 못했습니다: {str(e)[:120]}")
 
-    # 6) 폴더 연결 (선택)
-    link = opts.get("link")
-    if link is None and interactive(opts):
-        link = ask(opts, f"이 프로필을 쓸 프로젝트(또는 상위) 폴더 — 엔터로 건너뜀 (나중에 ai-board link {name})", "")
-    if link:
-        add_rule(conf, link, name)
-        aiwf.save_profiles(conf)
-        say(f"연결: {link} 아래 프로젝트 → 프로필 {name}")
-
-    say(f"\n프로필 '{name}' 준비 완료: 계정 {login} · 레포 {repo} · 보드 {data['url']}")
+    say(f"\n준비 완료: 계정 {login} · 레포 {repo} · 보드 {data['url']}")
     say("자동 설정됨: 이슈 닫힘 ↔ 완료, 완료 14일 뒤 카드 보관. 웹에서 프로젝트별 탭은 필터 label:proj:<이름> 으로 저장")
-    if len(conf["profiles"]) > 1:
-        say("프로필이 여럿입니다. 프로젝트마다 쓸 프로필을 정하세요: ai-board link <프로필> [폴더]  (확인: ai-board profiles)")
     return name
-
-
-def add_rule(conf, path, profile):
-    import os
-    p = os.path.abspath(os.path.expanduser(path))
-    conf["rules"] = [r for r in conf["rules"] if os.path.abspath(os.path.expanduser(r["path"])) != p]
-    conf["rules"].append({"path": p, "profile": profile})

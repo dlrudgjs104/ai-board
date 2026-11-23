@@ -36,7 +36,15 @@ step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 ask()  { # ask "질문" → 0(예)/1(아니오)
   [[ $yes == 1 ]] && return 0
   [[ -t 0 ]] || return 1
-  local r; read -r -p "  ? $1 [y/N] " r; [[ "$r" =~ ^[Yy] ]]
+  local r
+  while true; do   # y/n 이외의 입력은 다시 묻는다 (엔터는 기본값 N)
+    read -r -p "  ? $1 [y/N] " r || return 1      # 입력이 끊기면(EOF) 아니오
+    case "${r,,}" in
+      y|yes|예|네) return 0 ;;
+      ""|n|no|아니오|아니) return 1 ;;
+      *) echo "    y 또는 n 으로 입력해 주세요." ;;
+    esac
+  done
 }
 has()  { command -v "$1" >/dev/null 2>&1; }
 
@@ -105,8 +113,8 @@ step "4. GitHub 보드 연동 (AI Board)"
 if [[ $board == ask && $mode == install ]]; then
   echo "    여러 프로젝트·세션의 작업이 GitHub Projects 보드 하나에 카드로 실시간 정리됩니다."
   echo "    (작업 시작 → AI작업중, 질문 → 판단필요, 답변 끝 → 검토대기 + 보고 코멘트, 이슈 닫기 → 완료)"
-  echo "    카드는 작업 레포가 아니라 비공개 추적 레포(기본 <내계정>/work)의 이슈로 쌓입니다."
-  echo "    필요한 것: GitHub 계정, GitHub CLI, 본인 계정 로그인 + project 권한 (기록 레포·보드는 없으면 만들고, 있으면 연결)"
+  echo "    카드는 작업 레포가 아니라 비공개 기록 레포(기존 레포를 고르거나, 없으면 <내계정>/work 를 만듦)의 이슈로 쌓입니다."
+  echo "    필요한 것: GitHub 계정 하나, GitHub CLI, 로그인 + project 권한 (보드는 기존 것을 고르거나, 없으면 AI Board 를 만듦)"
   ask "지금 연동할까요?" && board=yes || board=no
 fi
 
@@ -142,13 +150,27 @@ if [[ $mode == check || $board == yes ]]; then
       fi
       gh auth status 2>&1 | grep -q "'project'" && ok "project 권한" || bad "project 권한 없음 → gh auth refresh -h github.com -s project"
       if [[ -f "${AI_WORKFLOW_STATE:-$HOME/.ai-workflow}/profiles.json" || -f "${AI_WORKFLOW_STATE:-$HOME/.ai-workflow}/board.json" ]]; then
-        ok "프로필 설정됨 → $("$ROOT/bin/ai-board" profiles 2>/dev/null | grep -c '계정') 개 (확인: ai-board profiles, 추가: ai-board init)"
+        # 파일만 남고 GitHub 의 기록 레포가 지워진 경우(재설치 때 흔함)를 잡아서 다시 만든다
+        chk="$("$ROOT/bin/ai-board" check 2>/dev/null || true)"   # 레포가 없으면 종료코드 1 → set -e 로 멈추지 않게
+        if grep -q '^OK' <<<"$chk"; then
+          ok "연결됨: $(awk '{print $2" · "$3}' <<<"$chk")  (확인: ai-board status, 다시 고르기: ai-board init)"
+        elif grep -q '^MISSING' <<<"$chk"; then
+          warn "기록 레포가 GitHub 에 없습니다 ($(awk '{print $3}' <<<"$chk"))."
+          if [[ $mode == install ]] && { [[ $yes == 1 || ! -t 0 ]] || ask "다시 설정할까요? (기존 레포를 고르거나 work 비공개 레포 생성, 보드는 있으면 재사용)"; }; then
+            if [[ $yes == 1 || ! -t 0 ]]; then "$ROOT/bin/ai-board" init -y --create-repo || warn "설정 실패 → ai-board init"
+            else "$ROOT/bin/ai-board" init || warn "설정을 마치지 못했습니다 → ai-board init"; fi
+          else
+            warn "나중에: ai-board init"
+          fi
+        else
+          warn "기록 레포를 확인하지 못했습니다 (네트워크·권한?) → ai-board status"
+        fi
       elif [[ $mode == install ]] && gh auth status 2>&1 | grep -q "'project'"; then
-        # 계정 선택 → 기록 레포(이름 지정, 있으면 연결) → 보드(있으면 재사용) 를 물으며 설정한다
+        # 기록 레포(기존 레포 연결, 없으면 work 비공개 생성) → 보드(기존 선택, 없으면 AI Board 생성) 를 물으며 설정한다
         if [[ $yes == 1 || ! -t 0 ]]; then "$ROOT/bin/ai-board" init -y --create-repo || warn "설정 실패 → ai-board init"
         else "$ROOT/bin/ai-board" init || warn "설정을 마치지 못했습니다 → ai-board init"; fi
       else
-        warn "프로필 미설정 → ai-board init   (회사·개인 계정이 따로면 계정마다 gh auth login 후 ai-board init 을 한 번씩)"
+        warn "기록 레포·보드 미설정 → ai-board init"
       fi
     fi
   fi
@@ -158,11 +180,36 @@ fi
 
 # ---------------------------------------------------------------- 마무리
 step "완료"
-cat <<EOF
-  사용법은 $ROOT/README.md 를 참고하세요. 바로 해 볼 것:
-    ai-init -n ~/myproject       # 프로젝트에 만들 문서 미리 보기
-    ai-init ~/myproject          # docs/STATUS.md 등 생성 (기존 파일은 덮어쓰지 않음)
-    cd ~/myproject && claude-personal   # 워크플로우 적용 세션 시작
-    ai-board                     # GitHub 보드(AI Board) 열기
+STATE_DIR="${AI_WORKFLOW_STATE:-$HOME/.ai-workflow}"
+if [[ -f "$STATE_DIR/profiles.json" || -f "$STATE_DIR/board.json" ]]; then
+  cat <<EOF
+  설치와 계정 설정이 끝났습니다. 명령은 모두 일반 터미널(WSL)에서 입력합니다. Claude 안에서 따로 설정할 것은 없습니다.
+
+  [매번] 작업할 프로젝트 폴더에서 시작
+    cd ~/myproject
+    claude-personal              # 개인 프로젝트 (회사 프로젝트는 claude-work)
+    → 열린 Claude 에게 "myproject 파악해줘" 처럼 평소대로 요청하면 됩니다.
+
+  [필요할 때] 터미널에서
+    ai-board                     # 기록 보드 열기
+    ai-board status              # 연결된 계정·기록 레포·보드 확인
+    ai-board init                # 기록 레포·보드를 다시 고르기
+    ai-init ~/myproject          # (선택) 프로젝트에 docs/STATUS.md 만들기. -n 은 미리 보기
   그냥 claude 로 시작한 세션에는 워크플로우가 적용되지 않습니다.
 EOF
+else
+  cat <<EOF
+  설치는 끝났지만 기록 레포·보드 설정이 아직 남았습니다. 명령은 모두 일반 터미널(WSL)에서 입력합니다.
+
+  [1회] 계정 연결과 기록 레포·보드 설정
+    gh auth login -s project     # GitHub 로그인 (아직 안 했다면)
+    ai-board init                # 기록 레포(기존 것 또는 work 생성) → 보드(기존 것 또는 AI Board 생성). 질문에 답하면 끝
+
+  [매번] 설정 후에는 프로젝트 폴더에서 시작
+    cd ~/myproject
+    claude-personal              # 열린 Claude 에게 평소대로 요청하면 됩니다
+
+  GitHub 기록 없이 쓰려면 설정을 건너뛰어도 claude-personal 은 동작하고, 일지는 ~/.ai-workflow/records/ 에 남습니다.
+  그냥 claude 로 시작한 세션에는 워크플로우가 적용되지 않습니다.
+EOF
+fi
