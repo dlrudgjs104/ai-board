@@ -3,7 +3,7 @@
   python3 lib/boardsetup.py [--repo 이름] [--board 번호|--board-title 제목] [--create-repo] [--reset-columns] [--readme] [-y]
   python3 lib/boardsetup.py check      기록 레포가 GitHub 에 실제로 있는지 점검 (종료코드 0 정상 · 1 없음 · 2 확인 못 함)
 
-계정은 gh 에 로그인된(활성) 계정 하나만 쓴다.
+계정은 하나만 쓴다: 로그인된 계정 중 고르거나 다른 계정을 새로 로그인한다 (--account 로 지정).
 - 기록 레포: 기존 레포 이름을 물어보고, 없으면 `ai-board`(비공개)를 기본으로 만든다. 카드는 이 레포의 이슈로 쌓인다.
 - 보드: 기존 보드를 고르고, 없으면 `ai-board` 를 새로 만든다.
 - 설명서는 README.md 로 올린다 (직접 쓴 README 가 있으면 건드리지 않고 AI-WORKFLOW.md 로)
@@ -80,21 +80,67 @@ def scopes(login):
     return [x.strip() for x in m.group(1).split(",") if x.strip()] if m else None   # None: 확인 불가(세분화 토큰 등)
 
 
+def login_new_account():
+    """브라우저 인증으로 gh 에 계정을 하나 더 로그인시킨다. 새로 생긴 계정 이름을 돌려준다 (실패 시 None)."""
+    before = set(accounts())
+    say("    표시되는 코드를 브라우저(https://github.com/login/device)에 입력하고, 쓰려는 GitHub 계정으로 승인하세요.")
+    say("    (이미 다른 계정으로 브라우저에 로그인돼 있으면, 승인 화면에서 계정을 바꾸거나 시크릿 창을 쓰세요.)")
+    subprocess.run(["gh", "auth", "login", "-h", "github.com", "-p", "https", "-w", "-s", "project"])
+    new = [x for x in accounts() if x not in before]
+    if new:
+        return new[-1]
+    r = subprocess.run(["gh", "api", "user", "-q", ".login"], capture_output=True, text=True)   # 같은 계정을 다시 인증한 경우
+    return r.stdout.strip() or None
+
+
+def active_account():
+    r = subprocess.run(["gh", "api", "user", "-q", ".login"], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def current_account(opts):
-    """GitHub 로그인 계정 하나. 로그인이 안 돼 있으면 대화형일 때 바로 로그인시킨다."""
-    if not accounts():
+    """연동할 GitHub 계정 하나를 정한다.
+    --account 로 지정하면 그 계정. 대화형이면 로그인된 계정 목록에서 고르거나 다른 계정을 새로 로그인한다.
+    비대화형이면 gh 의 활성 계정. 로그인이 하나도 없으면 대화형일 때 바로 로그인시킨다."""
+    accs = accounts()
+    want = opts.get("account")
+    if want:
+        if want not in accs:
+            raise SystemExit(f"{want} 계정이 gh 에 로그인되어 있지 않습니다. 먼저: gh auth login -h github.com -s project  (로그인된 계정: {', '.join(accs) or '없음'})")
+        login = want
+    elif not accs:
         if not interactive(opts):
             raise SystemExit("GitHub 에 로그인되어 있지 않습니다. 먼저: gh auth login -h github.com -s project")
-        say("GitHub 로그인이 필요합니다. 표시되는 코드를 브라우저(https://github.com/login/device)에 입력해 승인하세요.")
-        subprocess.run(["gh", "auth", "login", "-h", "github.com", "-p", "https", "-w", "-s", "project"])
-        if not accounts():
+        say("GitHub 로그인이 필요합니다.")
+        login = login_new_account()
+        if not login or not accounts():
             raise SystemExit("로그인하지 못했습니다. 직접 실행: gh auth login -h github.com -s project")
-    r = subprocess.run(["gh", "api", "user", "-q", ".login"], capture_output=True, text=True)
-    if r.returncode != 0 or not r.stdout.strip():
-        raise SystemExit(f"로그인 계정을 확인하지 못했습니다: {r.stderr.strip()[:200]}")
-    login = r.stdout.strip()
+    else:
+        act = active_account()
+        if not act:
+            raise SystemExit("로그인 계정을 확인하지 못했습니다. gh auth status 로 상태를 확인하세요.")
+        login = act
+        if interactive(opts):
+            while True:
+                accs = accounts()
+                say("연동할 GitHub 계정을 고르세요 (보드·기록 레포가 이 계정에 만들어집니다):")
+                for i, x in enumerate(accs, 1):
+                    say(f"    {i}) {x}" + ("   (현재 활성)" if x == act else ""))
+                say(f"    {len(accs) + 1}) 다른 계정으로 새로 로그인")
+                dflt = str(accs.index(act) + 1) if act in accs else "1"
+                n = ask(opts, "번호", dflt, valid=lambda v: v.isdigit() and 1 <= int(v) <= len(accs) + 1, hint="목록의 번호를 입력해 주세요.")
+                if int(n) <= len(accs):
+                    login = accs[int(n) - 1]
+                    break
+                new = login_new_account()
+                if new:
+                    login = new
+                    break
+                say("    로그인하지 못했습니다. 다시 고르세요.")
+        elif len(accs) > 1:
+            say(f"  (로그인된 계정이 여럿이라 활성 계정을 씁니다. 다른 계정은 --account <이름>)")
     others = [x for x in accounts() if x != login]
-    say(f"GitHub 계정: {login}" + (f"  (gh 에 로그인된 다른 계정 {', '.join(others)} 은 쓰지 않음. 바꾸려면 gh auth switch)" if others else ""))
+    say(f"GitHub 계정: {login}" + (f"  (다른 로그인 계정 {', '.join(others)} 은 쓰지 않음)" if others else ""))
     return login
 
 
@@ -183,9 +229,14 @@ def run_init(opts: dict) -> str:
     say("== ai-workflow 초기 설정 ==")
     login = current_account(opts)
     sc = scopes(login)
+    if sc is not None and "project" not in sc and interactive(opts):
+        say(f"{login} 계정에 보드에 필요한 project 권한이 없습니다. 추가합니다 (브라우저 인증).")
+        subprocess.run(["gh", "auth", "refresh", "-h", "github.com", "-u", login, "-s", "project"])
+        sc = scopes(login)
+        ghboard._tokens.pop(login, None)
     if sc is not None and "project" not in sc:
         raise SystemExit(f"{login} 계정에 project 권한이 없습니다 (보드에 필요).\n"
-                         f"  gh auth refresh -h github.com -s project")
+                         f"  gh auth refresh -h github.com -u {login} -s project")
     ghboard.PROFILE.update(name=None, login=login)
     name = aiwf.SLOT
     if name in conf["profiles"]:
@@ -308,6 +359,7 @@ def main(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="boardsetup", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("action", nargs="?", choices=["check"], help="check: 기록 레포 점검만")
+    ap.add_argument("--account", help="연동할 GitHub 계정 (gh 에 로그인된 계정). 없으면 목록에서 고르거나 새로 로그인")
     ap.add_argument("--repo", help="기록 레포 (이름 또는 owner/이름). 있으면 연결, 없으면 비공개 생성 (기본 work)")
     ap.add_argument("--create-repo", action="store_true")
     ap.add_argument("--board", type=int, help="기존 보드 번호")
@@ -319,7 +371,7 @@ def main(argv=None) -> int:
     if a.action == "check":
         return check()
     try:
-        run_init({"repo": a.repo, "create_repo": a.create_repo, "board": a.board, "board_title": a.board_title,
+        run_init({"account": a.account, "repo": a.repo, "create_repo": a.create_repo, "board": a.board, "board_title": a.board_title,
                   "reset_columns": a.reset_columns, "yes": a.yes, "readme": a.readme})
     except GitHubError as e:
         print(f"설정 중 GitHub 오류: {e}", file=sys.stderr)

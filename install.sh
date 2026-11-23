@@ -3,7 +3,7 @@
 #
 #   ./install.sh              명령 설치 + 필요한 것 점검. GitHub 보드 연동은 물어본 뒤 진행
 #   ./install.sh --board      GitHub 보드 연동까지 바로 진행 (gh 설치, 로그인, 권한, 보드 생성/연결)
-#   ./install.sh --reconnect  이미 연결돼 있어도 기록 레포·보드를 다시 고름 (계정을 바꿨을 때 등)
+#   ./install.sh --reconnect  이미 연결돼 있어도 기록 레포·보드를 다시 고름 (계정을 바꿀 때 등: 계정도 다시 고른다)
 #   ./install.sh --no-board   보드 연동은 묻지 않고 건너뜀
 #   ./install.sh --check      아무것도 바꾸지 않고 상태만 점검
 #   ./install.sh --uninstall  ~/.local/bin 에 만든 링크 제거 (레포와 프로젝트 문서는 그대로)
@@ -244,14 +244,8 @@ if [[ $mode == check || $board == yes ]]; then
     if ! gh auth status >/dev/null 2>&1; then
       bad "GitHub 로그인 안 됨 → gh auth login -s project"
     else
-      me="$(gh api user -q .login)"
-      ok "로그인: $me"
-      if ! gh auth status 2>&1 | grep -q "'project'"; then
-        if [[ $mode == install ]] && ask "보드에 필요한 project 권한이 없습니다. 추가할까요? (브라우저 인증)"; then
-          gh auth refresh -h github.com -s project || true
-        fi
-      fi
-      gh auth status 2>&1 | grep -q "'project'" && ok "project 권한" || bad "project 권한 없음 → gh auth refresh -h github.com -s project"
+      accs="$(gh auth status -h github.com 2>&1 | sed -n 's/.*account \([^ ]*\).*/\1/p' | sort -u | paste -sd, - | sed 's/,/, /g')"
+      ok "gh 로그인 계정: ${accs:-$(gh api user -q .login)}  (연동할 계정은 설정 단계에서 고르거나 새로 로그인합니다. project 권한도 그 계정 기준으로 확인)"
       if [[ $reconnect == 0 ]] && [[ -f "${AI_WORKFLOW_STATE:-$HOME/.ai-workflow}/profiles.json" || -f "${AI_WORKFLOW_STATE:-$HOME/.ai-workflow}/board.json" ]]; then
         # 파일만 남고 GitHub 의 기록 레포가 지워진 경우(재설치 때 흔함)를 잡아서 다시 만든다
         chk="$(python3 "$ROOT/lib/boardsetup.py" check 2>/dev/null || true)"   # 레포가 없으면 종료코드 1 → set -e 로 멈추지 않게
@@ -268,7 +262,7 @@ if [[ $mode == check || $board == yes ]]; then
         else
           warn "기록 레포를 확인하지 못했습니다 (네트워크·권한?) → ai-board status"
         fi
-      elif [[ $mode == install ]] && gh auth status 2>&1 | grep -q "'project'"; then
+      elif [[ $mode == install ]]; then
         # 기록 레포(기존 레포 연결, 없으면 ai-board 비공개 생성) → 보드(기존 선택, 없으면 ai-board 생성) 를 물으며 설정한다
         if [[ $yes == 1 || ! -t 0 ]]; then python3 "$ROOT/lib/boardsetup.py" -y --create-repo || warn "설정 실패 → ./install.sh --reconnect"
         else python3 "$ROOT/lib/boardsetup.py" || warn "설정을 마치지 못했습니다 → ./install.sh --reconnect"; fi

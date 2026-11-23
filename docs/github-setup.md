@@ -46,7 +46,7 @@ python3 lib/boardsetup.py --repo ai-log --board-title "내 보드"   # 이름 �
 python3 lib/boardsetup.py --board 3 --repo owner/repo          # 이미 있는 보드(팀 보드 등)를 번호로 연결
 ai-board status                               # 로그인·레포·보드·대기열·최근 오류
 ```
-다른 GitHub 계정으로 바꾸려면 `gh auth login -h github.com -s project`(또는 `gh auth switch`)로 그 계정을 활성화한 뒤 `./install.sh --reconnect` 를 실행한다. 프로젝트 레포에는 아무 파일도 생기지 않는다.
+다른 GitHub 계정으로 바꾸려면 `./install.sh --reconnect` 를 실행해 목록에서 계정을 고르거나 "다른 계정으로 새로 로그인"을 고른다 (`python3 lib/boardsetup.py --account <이름>` 으로 지정도 가능). 고른 계정에 project 권한이 없으면 그 자리에서 추가한다. 프로젝트 레포에는 아무 파일도 생기지 않는다.
 
 설명서는 레포 첫 화면에 보이도록 `README.md` 로 올라간다. 새 레포나 비어 있는 README 는 대체하고, 직접 쓴 README 가 있으면 건드리지 않고 `AI-WORKFLOW.md` 로 올린다.
 
