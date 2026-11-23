@@ -18,9 +18,12 @@ from pathlib import Path
 
 import aiwf
 
-BOARD = aiwf.STATE / "board.json"      # 보드·필드·옵션 ID
-CARDS = aiwf.STATE / "cards.json"      # 이슈 번호 → {item, sid, project, status, title, url, body_t}
-QUEUE = aiwf.STATE / "queue"
+# 아래 세 경로는 use(프로필) 로 바뀐다. 프로필마다 보드·카드·대기열이 따로다 (aiwf.profile_dir)
+BOARD = aiwf.STATE / "_none" / "board.json"      # 보드·필드·옵션 ID
+CARDS = aiwf.STATE / "_none" / "cards.json"      # 이슈 번호 → {item, sid, project, status, title, url, body_t}
+QUEUE = aiwf.STATE / "_none" / "queue"
+PROFILE = {"name": None, "login": None}
+_tokens = {}
 QLOCK = aiwf.STATE / "queue.lock"
 WLOCK = aiwf.STATE / "worker.lock"
 
@@ -46,12 +49,37 @@ def _pace():
     _last_call[0] = time.time()
 
 
+def use(name):
+    """이 프로세스가 다룰 프로필을 고른다. None 이면 아무것도 설정되지 않은 상태(configured() 가 False)."""
+    global BOARD, CARDS, QUEUE
+    d = aiwf.profile_dir(name) if name else aiwf.STATE / "_none"
+    BOARD, CARDS, QUEUE = d / "board.json", d / "cards.json", d / "queue"
+    info = aiwf.profiles_conf()["profiles"].get(name or "", {})
+    PROFILE.update(name=name, login=info.get("login"))
+    return info
+
+
+def gh_env(login=None):
+    """gh 호출에 쓸 환경. 프로필 계정의 토큰을 GH_TOKEN 으로 넣어, gh 에 로그인된 여러 계정 중 그 계정으로 호출한다.
+    토큰을 못 구하면(계정 미로그인 등) 기본 활성 계정으로 간다."""
+    login = login or PROFILE.get("login")
+    env = dict(os.environ)
+    if login:
+        if login not in _tokens:
+            r = subprocess.run(["gh", "auth", "token", "--user", login], capture_output=True, text=True)
+            _tokens[login] = r.stdout.strip() if r.returncode == 0 else ""
+        if _tokens[login]:
+            env["GH_TOKEN"] = _tokens[login]
+    return env
+
+
 def rest(method, endpoint, payload=None):
     _pace()
     cmd = ["gh", "api", "--method", method, endpoint]
     if payload is not None:
         cmd += ["--input", "-"]
-    r = subprocess.run(cmd, input=json.dumps(payload) if payload is not None else None, capture_output=True, text=True)
+    r = subprocess.run(cmd, input=json.dumps(payload) if payload is not None else None, capture_output=True, text=True,
+                       env=gh_env())
     if r.returncode != 0:
         raise GitHubError(r.stderr.strip()[:300] or r.stdout.strip()[:300])
     return json.loads(r.stdout) if r.stdout.strip() else {}
@@ -60,7 +88,8 @@ def rest(method, endpoint, payload=None):
 def graphql(query, **variables):
     _pace()
     payload = {"query": query, "variables": variables}
-    r = subprocess.run(["gh", "api", "graphql", "--input", "-"], input=json.dumps(payload), capture_output=True, text=True)
+    r = subprocess.run(["gh", "api", "graphql", "--input", "-"], input=json.dumps(payload), capture_output=True, text=True,
+                       env=gh_env())
     try:
         data = json.loads(r.stdout) if r.stdout.strip() else {}
     except ValueError:
@@ -281,7 +310,7 @@ def render_body(s, since=None):
         lines += ["", "### 커밋"] + [f"- `{c}`" for c in commits[-15:]]
     if s.get("summary"):
         lines += ["", "### 마지막 답변", "", "\n".join("> " + l for l in aiwf.short_lines(s["summary"], 1500).splitlines())]
-    lines += ["", "---", f"이어서 열기: `cd {s.get('path')} && claude-{s.get('mode') or 'personal'} --resume {s.get('id')}`",
+    lines += ["", "---", f"이어서 열기: `cd {s.get('path')} && claude-{s.get('launch_mode') or s.get('mode') or 'personal'} --resume {s.get('id')}`",
               "확인이 끝나면 이슈를 닫으세요 → 보드에서 **완료**로 이동"]
     return "\n".join(lines)
 
@@ -377,7 +406,15 @@ def process(q):
     s = aiwf.load_json(aiwf.session_file(sid), None)
     if not s:
         return None
+    if q.get("journal"):
+        import journal      # 일지(md)를 기록 레포에 올린다 (카드와 무관)
+        journal.push(s, rest)
+        q.pop("journal")
     num = card_of(sid)
+    if q.pop("detach", None) and num:     # 모드가 바뀜: 이전 모드의 카드는 그대로 두고 이 세션은 새 카드를 쓴다
+        c = cards().get(str(num), {})
+        save_card(num, sids=[x for x in (c.get("sids") or [c.get("sid")]) if x and x != sid])
+        num = None
     if q.get("fresh") and num and not q.get("bind") and not issue_open(num):
         save_card(num, status="완료")       # 사람이 웹에서 닫은 카드: 새 요청은 새 카드로
         num = None
@@ -410,9 +447,22 @@ def process(q):
     return left or None
 
 
+def _profile_names():
+    return list(aiwf.profiles_conf()["profiles"])
+
+
+def _queues():
+    """모든 프로필의 대기열 파일: [(프로필, 파일)]"""
+    out = []
+    for n in _profile_names():
+        q = aiwf.profile_dir(n) / "queue"
+        if q.is_dir():
+            out += [(n, f) for f in q.glob("*.json")]
+    return out
+
+
 def worker(foreground=False):
     aiwf.ensure_dirs()
-    QUEUE.mkdir(parents=True, exist_ok=True)
     lock = open(WLOCK, "w")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -420,20 +470,21 @@ def worker(foreground=False):
         return "이미 전송기가 돌고 있습니다"
     idle_since = time.time()
     backoff = 30
-    code = [aiwf.ROOT / "lib" / "ghboard.py", aiwf.ROOT / "lib" / "aiwf.py"]
-    code_t = max(f.stat().st_mtime for f in code)
+    code = [aiwf.ROOT / "lib" / "ghboard.py", aiwf.ROOT / "lib" / "aiwf.py", aiwf.ROOT / "lib" / "journal.py"]
+    code_t = max(f.stat().st_mtime for f in code if f.exists())
     while True:
-        if max(f.stat().st_mtime for f in code) != code_t:
+        if max(f.stat().st_mtime for f in code if f.exists()) != code_t:
             break       # 코드가 업데이트됨: 끝내고 새 코드로 다시 띄운다 (아래 spawn)
-        files = sorted(QUEUE.glob("*.json"), key=lambda p: p.stat().st_mtime)
-        ready = [f for f in files if aiwf.load_json(f, {}).get("not_before", 0) <= time.time()]
+        files = sorted(_queues(), key=lambda pf: pf[1].stat().st_mtime)
+        ready = [(n, f) for n, f in files if aiwf.load_json(f, {}).get("not_before", 0) <= time.time()]
         if not ready:
             if not files and time.time() - idle_since > (5 if foreground else 45):
                 break
             time.sleep(2)
             continue
         idle_since = time.time()
-        for f in ready:
+        for name, f in ready:
+            use(name)
             q = _take(f)
             if not q:
                 continue
@@ -443,23 +494,28 @@ def worker(foreground=False):
                 if left:
                     _putback(left, left["not_before"] - time.time())
             except GitHubError as e:
-                aiwf.append_event({"t": time.time(), "sid": q.get("sid"), "event": "SyncError", "detail": str(e)[:200]})
+                aiwf.append_event({"t": time.time(), "sid": q.get("sid"), "event": "SyncError",
+                                   "detail": f"[{name}] {str(e)[:200]}"})
                 if is_retryable(e):
                     _putback(q, backoff, hold_new=True)
                     backoff = min(backoff * 2, 900)
                     break
                 # 되돌릴 수 없는 오류(권한, 잘못된 ID 등)는 버리고 기록만 남긴다
-    if not foreground and time.time() - conf().get("archived_t", 0) > 86400:
-        try:
-            archive_done()          # 하루 한 번: 완료 후 14일 지난 카드 보관
-        except GitHubError:
-            pass
+    if not foreground:
+        for name in _profile_names():
+            use(name)
+            if configured() and time.time() - conf().get("archived_t", 0) > 86400:
+                try:
+                    archive_done()          # 하루 한 번: 완료 후 14일 지난 카드 보관
+                except GitHubError:
+                    pass
     lock.close()
     # 끝나는 사이에 들어온 작업이 있거나 코드가 바뀌었으면 새 전송기로 이어서 처리
-    if any(QUEUE.glob("*.json")) and not foreground:
+    if _queues() and not foreground:
         spawn_worker()
     return "대기열 비움"
 
 
 def pending():
-    return [aiwf.load_json(f, {}) for f in QUEUE.glob("*.json")] if QUEUE.is_dir() else []
+    """보내지 않은 작업(모든 프로필)."""
+    return [aiwf.load_json(f, {}) for _, f in _queues()]

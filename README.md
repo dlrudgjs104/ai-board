@@ -41,7 +41,7 @@ cd ~/ai-workflow
 | 1. 기본 도구 | git, python3, curl, git 사용자 이름·메일 | 없으면 `sudo apt install` |
 | 2. Claude Code | 없으면 공식 설치 스크립트로 설치 | Claude 계정(Pro/Max/Team/Enterprise) 또는 Console API 키. 처음 `claude` 실행 때 로그인 |
 | 3. 명령 등록 | `~/.local/bin` 에 명령 링크, PATH 확인 | 없음 |
-| 4. GitHub 보드 | GitHub CLI 설치·로그인(+`project` 권한), 비공개 추적 레포(기본 `<내계정>/work`) 확인·생성, 보드 생성·컬럼·레포 연결 | GitHub 계정 |
+| 4. GitHub 보드 | GitHub CLI 설치·로그인(+`project` 권한), 그 뒤 `ai-board init` 마법사: 계정 선택 → 기록 레포(이름 지정, 있으면 연결·없으면 비공개 생성) → 보드(있으면 재사용·없으면 생성) | GitHub 계정 |
 
 ```bash
 ./install.sh --board      # 보드 연동까지 바로
@@ -56,7 +56,27 @@ cd ~/ai-workflow
 
 ## 사용법
 
-### 1) 프로젝트 준비 (프로젝트당 1회)
+### 0) 초기 설정과 계정(프로필) — 계정마다 1회
+```bash
+ai-board init                                   # 마법사: 계정 → 기록 레포 이름 → 보드 → (선택) 적용할 폴더
+ai-board init --name company --account 회사계정 --repo ai-log --board-title "Dept Board" --link ~/company -y
+ai-board profiles                               # 연결된 계정·레포·보드와 폴더 연결 확인
+ai-board link company ~/company                 # 이 폴더 아래 프로젝트는 company 프로필 사용
+ai-board default personal                       # 연결 규칙이 없는 폴더는 personal
+```
+- **프로필 = 계정 + 기록 레포 + 보드.** 회사 계정과 개인 계정을 따로 운영하려면 계정마다 `gh auth login` 후 `ai-board init` 을 한 번씩 한다. 프로필마다 카드 번호·대기열이 따로라 섞이지 않는다.
+- **기존 것은 연결한다.** 레포가 이미 있으면 그대로 연결하고(README 는 건드리지 않고 `AI-WORKFLOW.md` 만 추가), 같은 이름의 보드가 있으면 재사용한다. 이름은 `--repo`, `--board-title`, `--board 번호` 로 자유롭게 정한다.
+- **새로 만든 레포에는 `README.md` 로 작동 방식 설명서가 들어간다** (카드·일지·보드 흐름·명령). 갱신은 `ai-board init --readme`.
+- 어느 프로필을 쓸지는 `-P 이름` > 폴더 연결(`link`) > 기본 프로필 순서로 정해진다. 프로젝트 레포에는 아무 파일도 만들지 않는다 (설정은 `~/.ai-workflow/profiles.json`).
+- 예전 단일 보드 설정은 첫 실행 때 자동으로 프로필 `default` 로 옮겨진다.
+
+### 작업 일지 (요청 · 결정 · 반영)
+세션마다 일지 md 하나가 자동으로 쌓인다: 요청한 사항 → 결정한 사항 → 반영된 사항(수정 파일·커밋) → 결과 보고.
+- 로컬: `~/.ai-workflow/records/<프로젝트>/날짜_시각_세션.md` (보드를 안 써도 항상 남음)
+- 기록 레포: 같은 파일이 `records/<프로젝트>/` 로 올라간다. 파일 이름은 `날짜_시각초_세션ID8자리-임의값.md` 로, 같은 프로젝트의 다른 기능을 여러 세션·여러 PC 에서 동시에 해도 덮어쓰지 않는다 (같은 이름이 다른 세션 것이면 `-2` 를 붙임).
+- 결정 사항은 AI가 답변 끝 보고의 `### 결정 사항` 목록과 AskUserQuestion 답변에서 가져온다. `off`·`skip` 한 요청은 기록되지 않는다.
+
+### 1) 프로젝트 준비 (프로젝트당 1회, 선택)
 ```bash
 ai-init ~/myproject       # docs/STATUS.md, docs/decisions/, docs/plans/, CLAUDE.md(없을 때만) 생성
 ```
@@ -73,6 +93,22 @@ ai-init ~/myproject       # docs/STATUS.md, docs/decisions/, docs/plans/, CLAUDE
 | `claude` | 워크플로우 없이 | 평소 그대로 |
 
 나머지 인자는 `claude` 에 그대로 간다. 예: `claude-personal --resume`, `claude-work --continue`
+
+### 세션 중 켜고 끄기 · 모드 전환
+시작한 뒤에도 바꿀 수 있다. 세션 안에서는 앞에 `!` 를 붙여 실행한다 (예: `! ai-board off`). Claude 에게 "기록 꺼줘" 라고 해도 된다.
+
+| 명령 | 효과 |
+|---|---|
+| `ai-board off` | 이 세션의 기록을 끈다. 카드·보고·STATUS 강제·요청 내용 저장이 모두 멈춘다 (일반 claude 처럼) |
+| `ai-board on` | 다시 켠다 (끄기 전 모드로) |
+| `ai-board skip` | **다음 요청 한 건만** 기록에서 제외하고 자동으로 원래대로. 간단한 질문 하나만 빼고 싶을 때 |
+| `ai-board personal` / `work` | 모드 전환. 바뀐 모드의 규칙이 다음 요청부터 적용되고, 보드에는 **새 카드**가 만들어진다 (완료 조건이 달라서) |
+| `ai-board now` | 현재 모드 확인 |
+
+- 적용은 **다음 요청부터**다. 작업 중간에 `off` 하면 열려 있던 카드는 검토대기로 정리된다.
+- 모드별 규칙(`personal.md`, `work.md`)은 시스템 프롬프트가 아니라 훅이 요청마다 넣어 준다 (처음·전환 직후엔 전문, 평소엔 한 줄 요약). 그래서 중간에 바꿀 수 있다.
+- 상태는 런처 실행 단위(`~/.ai-workflow/runs/`)로 저장되므로 `/clear` 해도 유지되고, `claude-personal` 을 새로 시작하면 시작 모드로 돌아간다.
+- `claude-lite` 세션은 `off` / `on` / `skip` 만 된다. 회사 내용이 민감한 요청은 `work` 에서도 `skip` 을 권한다.
 
 ### 3) 보드
 ```bash
@@ -100,25 +136,27 @@ ai-workflow/
 ├─ bin/
 │   ├─ claude-personal   모드 런처 (claude-work·claude-lite 는 링크). 규칙 주입 + 훅 연결
 │   ├─ ai-hook           Claude Code 훅: 활동 기록, 보드 작업 대기열에 넣기, 시작 요약 주입, STATUS 갱신 확인
-│   ├─ ai-board          보드 열기·목록·할 일 카드·설정·대기열 전송기
+│   ├─ ai-board          보드 열기·목록·할 일 카드·설정·대기열 전송기, 세션 중 off/on/skip/personal/work
 │   ├─ ai-init           프로젝트 문서 뼈대 생성
 │   └─ ai-status         STATUS.md 들만 빠르게 모아 보기
 ├─ lib/
-│   ├─ aiwf.py           공용 (기록 저장소, STATUS.md 해석)
+│   ├─ aiwf.py           공용 (기록 저장소, STATUS.md 해석, 프로필·실행 모드 상태)
+│   ├─ boardsetup.py     초기 설정 마법사 (계정·기록 레포·보드·프로필)
+│   ├─ journal.py        작업 일지 (요청·결정·반영 md 생성, 기록 레포 업로드)
 │   └─ ghboard.py        GitHub 보드 연동 (대기열, 전송기, 카드 생성·이동·보고)
-├─ rules/                세션에 주입되는 규칙 (고치면 다음 세션부터 반영)
+├─ rules/                주입되는 규칙 (core·review-gate·board 는 시작 때, personal·work 는 훅이 요청마다. 고치면 다음 세션부터 반영)
 │   ├─ core.md           세션 시작/종료 절차, 완료 조건, 시크릿
 │   ├─ review-gate.md    위험도(검토 필요도) 분류, 요약 형식
 │   ├─ board.md          보드에 정확히 보이도록 AI가 지킬 것 (보고 형식, 질문으로 끝내기, STATUS 갱신)
 │   └─ personal.md · work.md · lite.md
-├─ templates/            STATUS.md, plan.md, adr.md, CLAUDE.project.md
+├─ templates/            STATUS.md, plan.md, adr.md, CLAUDE.project.md, RECORDS_README.md(기록 레포 설명서)
 └─ docs/                 github-setup.md, 배경 분석
 ```
 
-로컬 기록은 `~/.ai-workflow/` (세션 상태, 활동 기록, 보드 설정·카드·대기열)에 쌓인다.
+로컬 기록은 `~/.ai-workflow/` (세션 상태, 활동 기록, 작업 일지, 프로필, 프로필별 보드 설정·카드·대기열)에 쌓인다.
 
 ## 주의
-- 추적 레포와 보드는 비공개로 둔다. 요청 원문, 수정 파일 목록, 마지막 답변이 카드에 올라간다.
+- 기록 레포와 보드는 비공개로 둔다. 요청 원문, 수정 파일 목록, 마지막 답변이 카드에 올라간다.
 - 이 레포에는 시크릿을 넣지 않는다. GitHub 토큰은 GitHub CLI 가 따로 보관한다.
 - 훅을 잠시 끄려면 `AI_WORKFLOW_HOOKS=0 claude-personal`.
 - 사람이 웹에서 카드를 옮기거나 닫은 것은 `ai-board list` 의 로컬 기록에 바로 반영되지 않는다. 정확한 현황은 보드에서 본다.

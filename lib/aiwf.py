@@ -4,6 +4,7 @@
   sessions/<세션ID>.json   세션별 현재 상태 (훅이 갱신, 대시보드가 읽음)
   events.jsonl             모든 세션의 활동 기록 (한 줄 = 한 이벤트)
   projects.json            알려진 프로젝트 목록 {경로: {name, path, seen}}
+  runs/<실행ID>.json       런처 실행별 모드 상태 (ai-board off|on|personal|work|skip 이 쓰고 훅이 읽음)
   board.json · cards.json · queue/   GitHub 보드 설정, 카드 기록, 보낼 작업 (lib/ghboard.py)
 """
 import json
@@ -19,6 +20,8 @@ STATE = Path(os.environ.get("AI_WORKFLOW_STATE") or Path.home() / ".ai-workflow"
 SESSIONS = STATE / "sessions"
 EVENTS = STATE / "events.jsonl"
 PROJECTS = STATE / "projects.json"
+PROFILES = STATE / "profiles.json"   # 프로필(계정·레포·보드 묶음) 목록, 기본 프로필, 폴더 규칙
+RUNS = STATE / "runs"       # 런처 실행 하나(= claude 프로세스 하나)마다 상태 파일: 모드 전환·끄기·건너뛰기
 
 SECTIONS = [("🔴", "판단 필요"), ("🟡", "진행 중"), ("🟢", "완료 · 검토 대기"), ("⚪", "예정")]
 
@@ -187,3 +190,103 @@ def short_lines(text: str, n: int) -> str:
 def short(text: str, n: int) -> str:
     text = " ".join((text or "").split())
     return text if len(text) <= n else text[: n - 1] + "…"
+
+
+# ---------------------------------------------------------------- 실행(런처) 단위 모드 상태
+MODES = ("personal", "work", "lite")
+
+
+def run_id():
+    """런처가 정해 준 이 claude 실행의 ID. 런처 밖에서 시작했으면 None."""
+    return os.environ.get("AI_WORKFLOW_RUN") or None
+
+
+def run_file(rid=None) -> Path:
+    return RUNS / f"{rid or run_id()}.json"
+
+
+def run_state(rid=None) -> dict:
+    """{mode: 사용자가 정한 모드(없으면 시작 모드), prev: 끄기 전 모드, skip: None|"next"|"active", injected: 마지막으로 규칙을 넣어 준 모드}"""
+    return load_json(run_file(rid), {}) if (rid or run_id()) else {}
+
+
+def save_run_state(rs: dict, rid=None):
+    if rid or run_id():     # 런처 밖에서 시작한 세션은 상태 파일이 없다
+        save_json(run_file(rid), rs)
+
+
+def launch_mode() -> str:
+    m = os.environ.get("AI_WORKFLOW_MODE", "personal")
+    return m if m in MODES else "personal"
+
+
+def effective_mode(rs=None) -> str:
+    """지금 이 세션에 적용되는 모드: personal | work | lite | off. 건너뛰기 중인 요청은 off."""
+    rs = run_state() if rs is None else rs
+    if rs.get("skip") == "active":
+        return "off"
+    return rs.get("mode") or launch_mode()
+
+
+def prune_runs(days=7):
+    """오래된 실행 상태 파일 정리."""
+    if RUNS.is_dir():
+        for f in RUNS.glob("*.json"):
+            try:
+                if now() - f.stat().st_mtime > days * 86400:
+                    f.unlink()
+            except OSError:
+                pass
+
+
+# ---------------------------------------------------------------- 프로필 (계정·기록 레포·보드 묶음)
+# profiles.json: {"default": 이름, "profiles": {이름: {login, owner, repo, board, board_title}},
+#                 "rules": [{"path": 폴더, "profile": 이름}]}
+# 프로필마다 STATE/profiles/<이름>/ 에 board.json · cards.json · queue/ 가 따로 있다 (이슈 번호가 계정마다 겹쳐도 안전)
+def profile_dir(name: str) -> Path:
+    return STATE / "profiles" / name
+
+
+def _migrate_legacy():
+    """예전 단일 보드 설정(STATE/board.json 등)을 프로필 'default' 로 옮긴다."""
+    old = STATE / "board.json"
+    if PROFILES.exists() or not old.exists():
+        return
+    b = load_json(old, {})
+    d = profile_dir("default")
+    d.mkdir(parents=True, exist_ok=True)
+    for n in ("board.json", "cards.json", "queue"):
+        if (STATE / n).exists():
+            os.replace(STATE / n, d / n)
+    save_json(PROFILES, {"default": "default", "rules": [], "profiles": {
+        "default": {"login": b.get("owner"), "owner": b.get("owner"), "repo": b.get("repo"), "board": b.get("number")}}})
+
+
+def profiles_conf() -> dict:
+    _migrate_legacy()
+    d = load_json(PROFILES, {})
+    d.setdefault("profiles", {})
+    d.setdefault("rules", [])
+    d.setdefault("default", None)
+    return d
+
+
+def save_profiles(d: dict):
+    save_json(PROFILES, d)
+
+
+def resolve_profile(path: str):
+    """프로젝트 경로 → 프로필 이름. 가장 긴 폴더 규칙이 이기고, 없으면 기본 프로필, 프로필이 하나뿐이면 그것."""
+    d = profiles_conf()
+    best = None
+    p = str(Path(path).resolve()) if path else ""
+    for r in d["rules"]:
+        base = str(Path(os.path.expanduser(r["path"])).resolve())
+        if r["profile"] in d["profiles"] and (p == base or p.startswith(base + os.sep)):
+            if best is None or len(base) > best[0]:
+                best = (len(base), r["profile"])
+    if best:
+        return best[1]
+    if d["default"] in d["profiles"]:
+        return d["default"]
+    return next(iter(d["profiles"])) if len(d["profiles"]) == 1 else None

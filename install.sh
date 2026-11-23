@@ -106,7 +106,7 @@ if [[ $board == ask && $mode == install ]]; then
   echo "    여러 프로젝트·세션의 작업이 GitHub Projects 보드 하나에 카드로 실시간 정리됩니다."
   echo "    (작업 시작 → AI작업중, 질문 → 판단필요, 답변 끝 → 검토대기 + 보고 코멘트, 이슈 닫기 → 완료)"
   echo "    카드는 작업 레포가 아니라 비공개 추적 레포(기본 <내계정>/work)의 이슈로 쌓입니다."
-  echo "    필요한 것: GitHub 계정, GitHub CLI, 본인 계정 로그인 + project 권한, 추적 레포(없으면 여기서 비공개로 만듦)"
+  echo "    필요한 것: GitHub 계정, GitHub CLI, 본인 계정 로그인 + project 권한 (기록 레포·보드는 없으면 만들고, 있으면 연결)"
   ask "지금 연동할까요?" && board=yes || board=no
 fi
 
@@ -141,16 +141,14 @@ if [[ $mode == check || $board == yes ]]; then
         fi
       fi
       gh auth status 2>&1 | grep -q "'project'" && ok "project 권한" || bad "project 권한 없음 → gh auth refresh -h github.com -s project"
-      if [[ -f "${AI_WORKFLOW_STATE:-$HOME/.ai-workflow}/board.json" ]]; then
-        ok "보드 설정됨 ($(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("url",""), "/", d.get("repo",""))' "${AI_WORKFLOW_STATE:-$HOME/.ai-workflow}/board.json"))"
+      if [[ -f "${AI_WORKFLOW_STATE:-$HOME/.ai-workflow}/profiles.json" || -f "${AI_WORKFLOW_STATE:-$HOME/.ai-workflow}/board.json" ]]; then
+        ok "프로필 설정됨 → $("$ROOT/bin/ai-board" profiles 2>/dev/null | grep -c '계정') 개 (확인: ai-board profiles, 추가: ai-board init)"
       elif [[ $mode == install ]] && gh auth status 2>&1 | grep -q "'project'"; then
-        repo="$me/work"
-        [[ $yes == 1 || ! -t 0 ]] || { read -r -p "  ? 추적 레포 이름 [$repo]: " r; repo="${r:-$repo}"; [[ "$repo" == */* ]] || repo="$me/$repo"; }
-        if gh api "repos/$repo" >/dev/null 2>&1; then "$ROOT/bin/ai-board" setup "$repo"
-        elif ask "$repo 가 없습니다. 비공개 레포로 만들까요?"; then "$ROOT/bin/ai-board" setup "$repo" --create
-        else warn "추적 레포를 만든 뒤: ai-board setup $repo"; fi
+        # 계정 선택 → 기록 레포(이름 지정, 있으면 연결) → 보드(있으면 재사용) 를 물으며 설정한다
+        if [[ $yes == 1 || ! -t 0 ]]; then "$ROOT/bin/ai-board" init -y --create-repo || warn "설정 실패 → ai-board init"
+        else "$ROOT/bin/ai-board" init || warn "설정을 마치지 못했습니다 → ai-board init"; fi
       else
-        warn "보드 미설정 → ai-board setup <내계정>/work"
+        warn "프로필 미설정 → ai-board init   (회사·개인 계정이 따로면 계정마다 gh auth login 후 ai-board init 을 한 번씩)"
       fi
     fi
   fi
