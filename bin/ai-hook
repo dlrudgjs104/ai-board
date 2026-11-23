@@ -374,10 +374,9 @@ def main():
         long_turn = aiwf.now() - s.get("turn_started", aiwf.now()) > 60 and aiwf.is_repo(path)
         pushed_now = bool(s.get("pushed"))
         if board and s.get("pushed") and not s.get("renamed"):
-            # AI가 제목을 안 바꿨으면 '첫 요청 > 이번에 푸시한 커밋' 으로 바꾼다
-            first = opening_request(s, card) or "작업"
+            # AI가 제목을 안 바꿨으면 이번에 푸시한 커밋 메시지로 바꾼다
             done = " · ".join(dict.fromkeys(s.get("pushed_commits") or [])) or "푸시함"
-            ghboard.enqueue(sid, rename=f"{aiwf.short(first, 40)} > {aiwf.short(done, 60)}")
+            ghboard.enqueue(sid, rename=aiwf.short(done, 100))
             s["renamed"] = True
         if s.get("pushed"):
             s["pushed"], s["pushed_commits"] = False, []
