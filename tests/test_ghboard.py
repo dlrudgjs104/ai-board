@@ -106,5 +106,25 @@ class SyncTest(unittest.TestCase):
         self.assertGreater(ghboard.conf()["synced_t"], 0)
 
 
+class DateFieldTest(unittest.TestCase):
+    def setUp(self):
+        setup_board()
+        aiwf.save_json(ghboard.BOARD, {**ghboard.conf(), "date_field": "FD"})
+        ghboard.save_card(7, item="ITEM")
+
+    def dates(self, fn):
+        with mock.patch.object(ghboard, "graphql") as g, mock.patch.object(ghboard, "today", return_value="2026-11-24"):
+            fn()
+        return [(c.kwargs["f"], c.kwargs["d"]) for c in g.call_args_list]
+
+    def test_date_is_recorded_only_once(self):
+        self.assertEqual(self.dates(lambda: ghboard.set_start(7)), [("FD", "2026-11-24")])
+        self.assertEqual(self.dates(lambda: ghboard.set_start(7)), [])
+
+    def test_no_field_no_call(self):
+        aiwf.save_json(ghboard.BOARD, {**ghboard.conf(), "date_field": None})
+        self.assertEqual(self.dates(lambda: ghboard.set_start(7)), [])
+
+
 if __name__ == "__main__":
     unittest.main()

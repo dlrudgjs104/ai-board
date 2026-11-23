@@ -28,6 +28,7 @@ _tokens = {}
 QLOCK = aiwf.STATE / "queue.lock"
 WLOCK = aiwf.STATE / "worker.lock"
 
+DATE_FIELD = "작업일"      # 날짜 필드: 카드가 처음 생길 때 한 번 기록
 COLUMNS = ["Backlog", "AI작업중", "판단필요", "검토대기", "완료"]
 COLUMN_DESC = {"Backlog": ("GRAY", "시작 전"), "AI작업중": ("YELLOW", "AI가 진행 중"), "판단필요": ("RED", "사람 결정·승인 대기"),
                "검토대기": ("GREEN", "AI 답변 완료, 사람 검토 대기"), "완료": ("PURPLE", "확인 끝 (이슈 닫힘)")}
@@ -118,7 +119,7 @@ def configured():
 def load_board_ids(owner, number):
     """보드 ID, Status·검토필요도 필드와 옵션 ID 를 읽어 온다."""
     q = """query($login:String!,$n:Int!){ %s(login:$login){ projectV2(number:$n){ id url title
-          fields(first:50){ nodes{ ... on ProjectV2SingleSelectField{ id name options{ id name } } } } } } }"""
+          fields(first:50){ nodes{ ... on ProjectV2Field{ id name } ... on ProjectV2SingleSelectField{ id name options{ id name } } } } } } }"""
     for kind in ("user", "organization"):
         try:
             d = graphql(q % kind, login=owner, n=number)
@@ -144,6 +145,8 @@ def save_board(owner, number, repo):
     if rv:
         data["review_field"] = rv["id"]
         data["review_options"] = {o["name"]: o["id"] for o in rv["options"]}
+    if fields.get(DATE_FIELD):
+        data["date_field"] = fields[DATE_FIELD]["id"]
     aiwf.save_json(BOARD, data)
     return data
 
@@ -174,6 +177,25 @@ def set_option(item_id, field, option_id):
     graphql("""mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,
                fieldId:$f,value:{singleSelectOptionId:$o}}){projectV2Item{id}}}""",
             p=c["project_id"], i=item_id, f=field, o=option_id)
+
+
+def today():
+    return time.strftime("%Y-%m-%d")
+
+
+def set_date(item_id, field, day):
+    c = conf()
+    graphql("""mutation($p:ID!,$i:ID!,$f:ID!,$d:Date!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,
+               fieldId:$f,value:{date:$d}}){projectV2Item{id}}}""", p=c["project_id"], i=item_id, f=field, d=day)
+
+
+def set_start(num):
+    """작업일: 카드마다 처음 한 번만 기록한다."""
+    c, card = conf(), cards().get(str(num), {})
+    if not c.get("date_field") or card.get("start"):
+        return
+    set_date(card["item"], c["date_field"], today())
+    save_card(num, start=today())
 
 
 def set_status(num, status):
@@ -219,6 +241,7 @@ def create_card(project, title, body, status="AI작업중", sid="", opened_t=Non
     save_card(it["number"], item=item, sids=[sid], project=project, url=it["html_url"], title=it["title"],
               status=None, body_t=time.time(), created=time.time(), bound_t=time.time(), opened_t=opened_t)
     set_status(it["number"], status)
+    set_start(it["number"])
     return it["number"]
 
 
@@ -231,6 +254,7 @@ def bind_card(num, sid, project, opened_t=None):
     save_card(num, item=item, sids=list(dict.fromkeys((prev.get("sids") or []) + [sid])), project=project,
               url=it["html_url"], title=it["title"], status=prev.get("status"), bound_t=time.time(),
               opened_t=prev.get("opened_t") or opened_t)
+    set_start(num)
     return num
 
 

@@ -215,6 +215,30 @@ def list_boards(owner, login):
     return [p for p in json.loads(r.stdout or "{}").get("projects", []) if not p.get("closed")]
 
 
+VIEWS = [("Table", "table"), ("Board", "board"), ("Roadmap", "roadmap")]
+
+
+def ensure_views(owner, number, login):
+    """새 보드의 레이아웃을 Table·Board·Roadmap 으로 맞춘다. 기본으로 생긴 'View 1' 은 Table 로 이름을 바꾸고 나머지를 추가한다."""
+    d = ghboard.graphql("query($l:String!,$n:Int!){ user(login:$l){ projectV2(number:$n){ views(first:20){ nodes{ id name layout } } } } }",
+                        l=owner, n=int(number))
+    views = (((d.get("user") or {}).get("projectV2") or {}).get("views") or {}).get("nodes") or []
+    have = {v["layout"] for v in views}
+    first = views[0] if views else None
+    if first and first["layout"] == "TABLE_LAYOUT" and re.fullmatch(r"View \d+", first["name"]):
+        ghboard.graphql("mutation($v:ID!,$n:String!){updateProjectV2View(input:{viewId:$v,name:$n}){projectV2View{id}}}",
+                        v=first["id"], n="Table")
+    for title, layout in VIEWS:
+        if layout.upper() + "_LAYOUT" in have or (layout == "table" and first):
+            continue
+        r = gh(login, "api", "-X", "POST", f"users/{owner}/projectsV2/{number}/views", "-f", f"name={title}", "-f", f"layout={layout}")
+        if r.returncode != 0:
+            r = gh(login, "api", "-X", "POST", f"orgs/{owner}/projectsV2/{number}/views", "-f", f"name={title}", "-f", f"layout={layout}")
+        if r.returncode != 0:
+            warn(f"{title} 뷰를 만들지 못했습니다: {r.stderr.strip()[:100]}")
+    ok("뷰 설정: " + " · ".join(t for t, _ in VIEWS))
+
+
 def ensure_layout(owner, number, repo, login, fresh, reset):
     """보드 컬럼·검토필요도 필드·레포 연결을 맞춘다. 기본 컬럼(Todo/In Progress/Done)은 ID 를 유지한 채 이름만 바꿔서
     GitHub 기본 자동화(닫으면 Done)가 그대로 '완료' 를 가리키게 한다."""
@@ -236,6 +260,11 @@ def ensure_layout(owner, number, repo, login, fresh, reset):
         gh(login, "project", "field-create", str(number), "--owner", owner, "--name", "검토필요도",
            "--data-type", "SINGLE_SELECT", "--single-select-options", "낮음,중간,높음")
         ok("필드 추가: 검토필요도 (낮음/중간/높음)")
+    if ghboard.DATE_FIELD not in fields:
+        gh(login, "project", "field-create", str(number), "--owner", owner, "--name", ghboard.DATE_FIELD, "--data-type", "DATE")
+        ok(f"필드 추가: {ghboard.DATE_FIELD} (날짜)")
+    if fresh:
+        ensure_views(owner, number, login)
     if gh(login, "project", "link", str(number), "--owner", owner, "--repo", repo).returncode == 0:
         ok(f"보드를 {repo} 레포의 Projects 탭에 연결")
 
