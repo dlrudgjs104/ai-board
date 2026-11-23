@@ -12,6 +12,11 @@
   ai-board title <번호|--session ID> "요청 요약 > 수정된 내용"   카드 제목 바꾸기 (푸시 뒤 훅이 안내)
   ai-board flush                  대기열에 남은 보드 작업을 지금 보내기
   ai-board archive [--days 14]    완료 후 며칠 지난 카드를 보드에서 보관 (하루 한 번 자동으로도 함)
+  ai-board sync                   웹에서 옮기거나 닫은 카드를 로컬 기록에 반영 (list 와 전송기도 자동으로 함)
+  ai-board search 키워드 [-p 프로젝트]   작업 일지에서 키워드 찾기 ("이거 왜 이렇게 결정했지")
+  ai-board digest [--days 1]      최근 며칠 동안의 요청·결정·커밋을 프로젝트별로 요약
+  ai-board prune-records [--days 90] [--yes]   오래된 로컬 일지 정리 (기본은 목록만. 기록 레포 사본은 그대로)
+  ai-board notify <ntfy 주소>|off|test   판단필요 카드가 생기면 푸시 알림 (기본 꺼짐. 프로젝트·카드 번호·링크만 보냄)
 
 세션 중 전환 (claude-personal/work/lite 로 시작한 세션 안에서, 앞에 ! 를 붙여 실행: ! ai-board off):
   ai-board off        이 세션의 기록을 끈다 (보드·보고 규칙 모두. 일반 claude 처럼)
@@ -34,6 +39,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 import aiwf  # noqa: E402
 import ghboard  # noqa: E402
+import records  # noqa: E402
 from ghboard import GitHubError  # noqa: E402
 
 
@@ -116,6 +122,12 @@ def cmd_list(_):
         ghboard.use(pn)
         if not ghboard.configured():
             continue
+        synced = True
+        if shutil.which("gh"):
+            try:
+                ghboard.sync_from_board()       # 웹에서 옮기거나 닫은 카드를 먼저 반영
+            except GitHubError:
+                synced = False
         cards = ghboard.cards()
         head = ""
         for col in ghboard.COLUMNS[:-1]:
@@ -124,7 +136,7 @@ def cmd_list(_):
                 print(f"\n■ {head}{col}")
                 for n, c in rows[:15]:
                     print(f"   #{n:<4} {aiwf.short(c.get('title'), 90)}")
-        print(f"\n{head}보드: {ghboard.conf()['url']}  (사람이 웹에서 옮기거나 닫은 카드는 여기 반영되지 않을 수 있음)")
+        print(f"\n{head}보드: {ghboard.conf()['url']}" + ("" if synced else "  (GitHub 에 연결하지 못해 마지막으로 저장된 상태입니다)"))
     left = ghboard.pending()
     if left:
         print(f"\n⏳ 아직 보내지 않은 보드 작업 {len(left)}건 (ai-board flush)")
@@ -255,6 +267,71 @@ def cmd_archive(a):
     print(f"보관한 카드: {n}개 (완료 후 {a.days}일 지난 것)")
 
 
+def cmd_sync(_):
+    pick()
+    need_gh(); need_board()
+    try:
+        n = ghboard.sync_from_board()
+    except GitHubError as e:
+        die(f"동기화하지 못했습니다: {e}")
+    print(f"보드와 맞춘 카드: {n}개")
+
+
+def cmd_search(a):
+    hits = records.search(" ".join(a.words), project=a.p, limit=a.limit)
+    if not hits:
+        print("찾은 일지가 없습니다. (이 PC 의 로컬 일지만 검색합니다)")
+        return
+    last = None
+    for path, n, line in hits:
+        if path != last:
+            print(f"\n{path}")
+            last = path
+        print(f"  {n:>4}: {aiwf.short(line, 140)}")
+    if len(hits) >= a.limit:
+        print(f"\n(앞의 {a.limit}건만 표시: --limit 로 늘릴 수 있음)")
+
+
+def cmd_digest(a):
+    print(records.digest(a.days))
+
+
+def cmd_prune_records(a):
+    old = records.prune(a.days, dry_run=not a.yes)
+    if not old:
+        print(f"{a.days}일보다 오래된 로컬 일지가 없습니다.")
+        return
+    for f in old[:30]:
+        print(f"  {f.relative_to(records.records_dir())}")
+    if len(old) > 30:
+        print(f"  … 외 {len(old) - 30}개")
+    if a.yes:
+        print(f"삭제함: {len(old)}개 (기록 레포에 올라간 사본은 그대로)")
+    else:
+        print(f"\n{len(old)}개를 지울 수 있습니다. 실제로 지우려면 --yes. 기록 레포에 올라가지 않은 일지는 복구할 수 없습니다.")
+
+
+def cmd_notify(a):
+    import notify
+    arg = a.target
+    if arg == "test":
+        if not notify.get_url():
+            die("등록된 알림 주소가 없습니다: ai-board notify https://ntfy.sh/내토픽")
+        ok = notify.send("ai-workflow 테스트", "알림이 도착하면 설정이 끝난 것입니다.")
+        print("보냈습니다" if ok else "보내지 못했습니다 (주소·네트워크 확인)")
+    elif arg in (None, "status"):
+        print(f"알림: {notify.get_url() or '꺼짐'}")
+    elif arg == "off":
+        notify.set_url("")
+        print("알림을 껐습니다")
+    else:
+        try:
+            notify.set_url(arg)
+        except ValueError as e:
+            die(str(e))
+        print(f"알림 주소 등록: {arg}\n판단필요 카드가 생기면 프로젝트 이름·카드 번호·링크만 보냅니다 (요청·답변 내용은 보내지 않음). 확인: ai-board notify test")
+
+
 def need_run():
     if not aiwf.run_id():
         die("claude-personal / claude-work / claude-lite 로 시작한 세션 안에서만 쓸 수 있습니다 (세션 안에서는 ! ai-board off).")
@@ -328,6 +405,11 @@ def main():
     cl = sub.add_parser("close"); cl.add_argument("num"); cl.add_argument("memo", nargs="*")
     ti = sub.add_parser("title"); ti.add_argument("--session"); ti.add_argument("words", nargs="+")
     ar = sub.add_parser("archive"); ar.add_argument("--days", type=int, default=14)
+    sub.add_parser("sync")
+    se = sub.add_parser("search"); se.add_argument("words", nargs="+"); se.add_argument("-p"); se.add_argument("--limit", type=int, default=40)
+    dg = sub.add_parser("digest"); dg.add_argument("--days", type=float, default=1)
+    pr = sub.add_parser("prune-records"); pr.add_argument("--days", type=int, default=90); pr.add_argument("--yes", action="store_true")
+    nt = sub.add_parser("notify"); nt.add_argument("target", nargs="?")
     a = ap.parse_args()
     if a.cmd == "register":
         aiwf.register_project(*aiwf.project_of(os.path.abspath(a.path)))
@@ -337,7 +419,9 @@ def main():
         {"open": cmd_open, None: cmd_open, "list": cmd_list, "status": cmd_status, "flush": cmd_flush,
          "off": cmd_switch, "on": cmd_switch, "personal": cmd_switch, "work": cmd_switch, "skip": cmd_switch, "now": cmd_now,
          "init": cmd_init, "check": cmd_check,
-         "task": cmd_task, "close": cmd_close, "title": cmd_title, "archive": cmd_archive}[a.cmd](a)
+         "task": cmd_task, "close": cmd_close, "title": cmd_title, "archive": cmd_archive,
+         "sync": cmd_sync, "search": cmd_search, "digest": cmd_digest, "prune-records": cmd_prune_records,
+         "notify": cmd_notify}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 import aiwf
+from redact import redact
 
 # 아래 세 경로는 use() 로 정해진다 (aiwf.profile_dir). 계정 하나만 쓰므로 실제로는 'default' 한 칸이다
 BOARD = aiwf.STATE / "_none" / "board.json"      # 보드·필드·옵션 ID
@@ -184,6 +185,12 @@ def set_status(num, status):
         raise GitHubError(f"보드에 '{status}' 컬럼이 없습니다 (ai-board setup 으로 다시 맞추세요)")
     set_option(card["item"], c["status_field"], opt)
     save_card(num, status=status)
+    if status == "판단필요":
+        try:
+            import notify
+            notify.needs_you(card.get("project") or "?", num, card.get("url"))
+        except Exception:       # 알림이 실패해도 카드 이동은 이미 끝났다
+            pass
 
 
 def set_review(num, level):
@@ -212,7 +219,7 @@ def ensure_labels(repo, project):
 def create_card(project, title, body, status="AI작업중", sid="", opened_t=None):
     c = conf()
     ensure_labels(c["repo"], project)
-    it = rest("POST", f"repos/{c['repo']}/issues", {"title": f"[{project}] {title}", "body": body,
+    it = rest("POST", f"repos/{c['repo']}/issues", {"title": redact(f"[{project}] {title}"), "body": redact(body),
                                                     "labels": ["ai-card", f"proj:{project}"]})
     item = add_to_board(it["node_id"])
     save_card(it["number"], item=item, sids=[sid], project=project, url=it["html_url"], title=it["title"],
@@ -235,7 +242,7 @@ def bind_card(num, sid, project, opened_t=None):
 
 def update_body(num, body):
     c = conf()
-    rest("PATCH", f"repos/{c['repo']}/issues/{num}", {"body": body})
+    rest("PATCH", f"repos/{c['repo']}/issues/{num}", {"body": redact(body)})
     save_card(num, body_t=time.time())
 
 
@@ -245,6 +252,7 @@ def rename(num, title):
     proj = card.get("project")
     if proj and not title.startswith(f"[{proj}]"):
         title = f"[{proj}] {title}"
+    title = redact(title)
     rest("PATCH", f"repos/{c['repo']}/issues/{num}", {"title": title[:250]})
     save_card(num, title=title)
 
@@ -271,6 +279,39 @@ def archive_done(days=14):
     return n
 
 
+def sync_from_board(max_pages=5):
+    """사람이 웹에서 옮기거나 닫은 카드를 로컬 기록(cards.json)에 반영한다. 바뀐 카드 수를 돌려준다.
+    아직 보내지 않은 작업이 있는 세션의 카드는 건드리지 않는다 (곧 AI 가 직접 옮길 것이므로)."""
+    c = conf()
+    local = cards()
+    busy = {q.get("sid") for q in pending()}
+    changed, after = 0, None
+    for _ in range(max_pages):
+        d = graphql("""query($p:ID!,$a:String){ node(id:$p){ ... on ProjectV2{ items(first:100, after:$a){
+                       pageInfo{ hasNextPage endCursor } nodes{ isArchived
+                       fieldValueByName(name:"Status"){ ... on ProjectV2ItemFieldSingleSelectValue{ name } }
+                       content{ ... on Issue{ number state } } } } } } }""", p=c["project_id"], a=after)
+        items = d["node"]["items"]
+        for it in items["nodes"]:
+            content = it.get("content") or {}
+            num = str(content.get("number") or "")
+            card = local.get(num)
+            if not card or set(card.get("sids") or [card.get("sid")]) & busy:
+                continue
+            status = (it.get("fieldValueByName") or {}).get("name")
+            if content.get("state") == "CLOSED":
+                status = "완료"
+            if status and status != card.get("status"):
+                save_card(num, status=status)
+                changed += 1
+        if not items["pageInfo"]["hasNextPage"]:
+            break
+        after = items["pageInfo"]["endCursor"]
+    c["synced_t"] = time.time()
+    aiwf.save_json(BOARD, c)
+    return changed
+
+
 def close_issue(num):
     """이슈를 닫는다. 보드 자동화(Auto-close issue)가 먼저 닫았으면 그대로 둔다."""
     c = conf()
@@ -283,7 +324,7 @@ def close_issue(num):
 
 def comment(num, text):
     c = conf()
-    rest("POST", f"repos/{c['repo']}/issues/{num}/comments", {"body": text})
+    rest("POST", f"repos/{c['repo']}/issues/{num}/comments", {"body": redact(text)})
 
 
 # ---------------------------------------------------------------- 카드 본문
@@ -470,7 +511,7 @@ def worker(foreground=False):
         return "이미 전송기가 돌고 있습니다"
     idle_since = time.time()
     backoff = 30
-    code = [aiwf.ROOT / "lib" / "ghboard.py", aiwf.ROOT / "lib" / "aiwf.py", aiwf.ROOT / "lib" / "journal.py"]
+    code = [aiwf.ROOT / "lib" / n for n in ("ghboard.py", "aiwf.py", "journal.py", "redact.py", "notify.py")]
     code_t = max(f.stat().st_mtime for f in code if f.exists())
     while True:
         if max(f.stat().st_mtime for f in code if f.exists()) != code_t:
@@ -504,6 +545,11 @@ def worker(foreground=False):
     if not foreground:
         for name in _profile_names():
             use(name)
+            if configured() and time.time() - conf().get("synced_t", 0) > 600:
+                try:
+                    sync_from_board()       # 웹에서 옮기거나 닫은 카드를 로컬 기록에 반영
+                except GitHubError:
+                    pass
             if configured() and time.time() - conf().get("archived_t", 0) > 86400:
                 try:
                     archive_done()          # 하루 한 번: 완료 후 14일 지난 카드 보관

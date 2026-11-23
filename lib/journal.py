@@ -17,6 +17,7 @@ import urllib.parse
 from pathlib import Path
 
 import aiwf
+from redact import redact
 
 RECORDS = aiwf.STATE / "records"
 FULL = 100_000     # 증적용이라 요청·답변은 사실상 자르지 않는다 (비정상적으로 긴 것만 방어)
@@ -54,7 +55,7 @@ def turns(s: dict) -> list:
 
 
 def new_turn(s: dict, text: str, mode: str):
-    turns(s).append({"t": aiwf.now(), "mode": mode, "request": (text or "").strip()[:FULL],
+    turns(s).append({"t": aiwf.now(), "mode": mode, "request": redact((text or "").strip()[:FULL]),
                      "decisions": [], "files": [], "commits": [], "report": ""})
     del s["journal"][:-200]
 
@@ -78,7 +79,7 @@ def add_commit(s: dict, commit: str):
 
 def add_decision(s: dict, text: str):
     c = cur(s)
-    text = aiwf.short(text, 400)
+    text = redact(aiwf.short(text, 400))
     if c is not None and text and text not in c["decisions"]:
         c["decisions"].append(text)
 
@@ -143,9 +144,9 @@ def collect_steps(path, since: float) -> list:
                 cont = (d.get("message") or {}).get("content")
                 for b in cont if isinstance(cont, list) else []:
                     if b.get("type") == "text" and (b.get("text") or "").strip():
-                        out.append({"k": "text", "v": b["text"].strip()[:FULL]})
+                        out.append({"k": "text", "v": redact(b["text"].strip()[:FULL])})
                     elif b.get("type") == "tool_use":
-                        out.append({"k": "tool", "v": _tool_line(b)})
+                        out.append({"k": "tool", "v": redact(_tool_line(b))})
     except OSError:
         return []
     return out[-500:]
@@ -155,7 +156,7 @@ def finish_turn(s: dict, msg: str, transcript=None):
     c = cur(s)
     if c is None:
         return
-    c["report"] = aiwf.short_lines(msg or "", FULL)
+    c["report"] = redact(aiwf.short_lines(msg or "", FULL))
     if transcript:
         steps = collect_steps(transcript, c.get("t") or 0)
         if steps and steps[-1]["k"] == "text" and steps[-1]["v"] == (msg or "").strip():
@@ -196,7 +197,7 @@ def render(s: dict) -> str:
             lines += ["**결과 보고**", ""] + ["> " + l for l in t["report"].splitlines()] + [""]
         elif not t.get("done_t"):
             lines += ["_(진행 중이거나 답변 전에 종료됨)_", ""]
-    return "\n".join(lines)
+    return redact("\n".join(lines))      # 마지막 안전망: 어떤 경로로 들어왔든 올라가기 직전에 한 번 더
 
 
 def write_local(s: dict) -> Path:

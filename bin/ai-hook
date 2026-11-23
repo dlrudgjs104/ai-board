@@ -385,7 +385,7 @@ def main():
         s["state"] = "needs_you" if q else "replied"
         s["note"] = aiwf.short(msg.strip().splitlines()[-1], 200) if q and msg.strip() else ""
         detail = aiwf.short(msg, 200)
-        worked = bool(changed or s.get("turn_commits"))
+        worked = bool(s.get("turn_files") or s.get("turn_commits"))
         # 레포가 아닌 폴더(홈 등)에서 시작해 아직 고친 파일이 없으면 프로젝트를 알 수 없으므로 카드를 만들지 않는다
         long_turn = aiwf.now() - s.get("turn_started", aiwf.now()) > 60 and aiwf.is_repo(path)
         pushed_now = bool(s.get("pushed"))
