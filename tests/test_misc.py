@@ -78,11 +78,11 @@ class FetchThrottleTest(unittest.TestCase):
 
 class OnOffCommandTest(unittest.TestCase):
     def run_cli(self, *args, run="r1"):
-        env = {**os.environ, "AI_WORKFLOW_STATE": os.environ["AI_WORKFLOW_STATE"], "AI_WORKFLOW_MODE": "work"}
+        env = {**os.environ, "AI_BOARD_STATE": os.environ["AI_BOARD_STATE"], "AI_BOARD_MODE": "work"}
         if run:
-            env["AI_WORKFLOW_RUN"] = run
+            env["AI_BOARD_RUN"] = run
         else:
-            env.pop("AI_WORKFLOW_RUN", None)
+            env.pop("AI_BOARD_RUN", None)
         return subprocess.run([sys.executable, str(helpers.ROOT / "bin" / "ai-board"), *args], capture_output=True, text=True, env=env)
 
     def setUp(self):
@@ -111,7 +111,7 @@ class SetupEntryPointsTest(unittest.TestCase):
 
     def test_boardsetup_check_without_config(self):
         state = helpers.fresh_state()
-        env = {**os.environ, "AI_WORKFLOW_STATE": str(state)}
+        env = {**os.environ, "AI_BOARD_STATE": str(state)}
         r = subprocess.run([sys.executable, str(helpers.ROOT / "lib" / "boardsetup.py"), "check"], capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertTrue(r.stdout.startswith("MISSING"), r.stdout)
@@ -126,7 +126,7 @@ class SetupEntryPointsTest(unittest.TestCase):
         """전송기를 띄우는 코드가 다른 폴더에서도 ghboard 를 import 할 수 있다 (실제 전송 루프는 돌리지 않는다)."""
         code = ghboard.WORKER_CODE.replace("ghboard.worker()", "print(callable(ghboard.worker))")
         r = subprocess.run([sys.executable, "-c", code, str(helpers.ROOT / "lib")], capture_output=True, text=True, cwd="/",
-                           env={**os.environ, "AI_WORKFLOW_STATE": os.environ["AI_WORKFLOW_STATE"]})
+                           env={**os.environ, "AI_BOARD_STATE": os.environ["AI_BOARD_STATE"]})
         self.assertEqual((r.returncode, r.stdout.strip()), (0, "True"), r.stderr)
 
     def test_spawn_worker_uses_worker_code(self):
@@ -149,8 +149,8 @@ class LocalStateMaskedTest(unittest.TestCase):
         repo = helpers.TMP / "maskrepo"
         repo.mkdir(exist_ok=True)
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
-        env = {**os.environ, "AI_WORKFLOW_STATE": str(state), "AI_WORKFLOW_MODE": "personal"}
-        env.pop("AI_WORKFLOW_RUN", None)
+        env = {**os.environ, "AI_BOARD_STATE": str(state), "AI_BOARD_MODE": "personal"}
+        env.pop("AI_BOARD_RUN", None)
 
         def fire(event, **extra):
             d = {"hook_event_name": event, "session_id": "mask-1234", "cwd": str(repo), **extra}

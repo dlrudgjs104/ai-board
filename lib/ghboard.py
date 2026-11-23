@@ -198,7 +198,7 @@ def set_review(num, level):
 def ensure_labels(repo, project):
     c = conf()
     done = set(c.get("labels", []))
-    for name, color, desc in (("ai-card", "5319e7", "ai-workflow 세션 카드"), (f"proj:{project}", "1d76db", f"프로젝트 {project}")):
+    for name, color, desc in (("ai-card", "5319e7", "ai-board 세션 카드"), (f"proj:{project}", "1d76db", f"프로젝트 {project}")):
         if name in done:
             continue
         try:
@@ -333,7 +333,7 @@ def render_body(s, since=None):
     t = lambda x: time.strftime("%m-%d %H:%M", time.localtime(x or 0))
     live = {"working": "⚙ AI 작업 중", "needs_you": "🔔 사람 확인 대기", "replied": "✅ 답변 완료", "idle": "· 대기",
             "ended": "■ 세션 종료"}.get(s.get("state"), s.get("state"))
-    lines = [f"> 🤖 ai-workflow 자동 기록 · 프로젝트 **{s.get('project')}** · 모드 {s.get('mode')} · 세션 `{s.get('id', '')[:8]}`"
+    lines = [f"> 🤖 ai-board 자동 기록 · 프로젝트 **{s.get('project')}** · 모드 {s.get('mode')} · 세션 `{s.get('id', '')[:8]}`"
              f"{' · 브랜치 `' + s['branch'] + '`' if s.get('branch') else ''}", "",
              f"**현재:** {live} (마지막 활동 {t(s.get('last_activity'))})", "", "### 요청"]
     reqs = [r for r in (s.get("requests") or []) if not since or r["t"] >= since]

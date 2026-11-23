@@ -1,4 +1,4 @@
-"""install.sh --uninstall [--purge] 검증. 실제 gh 와 ~/.ai-workflow 를 건드리지 않도록 가짜 gh, 임시 HOME·상태 폴더만 쓴다."""
+"""install.sh --uninstall [--purge] 검증. 실제 gh 와 ~/.ai-board 를 건드리지 않도록 가짜 gh, 임시 HOME·상태 폴더만 쓴다."""
 import json
 import os
 import signal
@@ -25,7 +25,7 @@ class InstallUninstallTest(unittest.TestCase):
     def setUp(self):
         self.root = Path(helpers.fresh_state()).parent / f"inst-{time.time_ns()}"
         self.home, self.bin = self.root / "home", self.root / "bin"
-        self.state = self.home / ".ai-workflow"
+        self.state = self.home / ".ai-board"
         stub = self.root / "stub"
         for d in (self.home, self.bin, stub, self.state / "records" / "shop", self.state / "sessions",
                   self.state / "profiles" / "default" / "queue"):
@@ -41,7 +41,7 @@ class InstallUninstallTest(unittest.TestCase):
         (self.state / "profiles" / "default" / "queue" / "q1.json").write_text("{}")
         for c in ("ai-board", "claude-personal", "claude-work", "claude-lite"):
             (self.bin / c).symlink_to(helpers.ROOT / "bin" / c)
-        self.env = {**os.environ, "HOME": str(self.home), "AI_WORKFLOW_STATE": str(self.state), "AI_WORKFLOW_BIN": str(self.bin),
+        self.env = {**os.environ, "HOME": str(self.home), "AI_BOARD_STATE": str(self.state), "AI_BOARD_BIN": str(self.bin),
                     "PATH": f"{stub}:{os.environ['PATH']}", "GH_STUB_LOG": str(self.log)}
         self.procs = []
 
@@ -119,7 +119,7 @@ class InstallUninstallTest(unittest.TestCase):
     def test_refuses_home_directory(self):
         sentinel = self.home / "important.txt"
         sentinel.write_text("keep")
-        r = self.run_install("--uninstall", "--purge", "-y", env={**self.env, "AI_WORKFLOW_STATE": str(self.home)})
+        r = self.run_install("--uninstall", "--purge", "-y", env={**self.env, "AI_BOARD_STATE": str(self.home)})
         self.assertNotEqual(r.returncode, 0)
         self.assertTrue(sentinel.exists())
 
@@ -129,18 +129,18 @@ class InstallUninstallTest(unittest.TestCase):
         (self.home / "records" / "mine.md").write_text("keep")
         sentinel = self.home / "important.txt"
         sentinel.write_text("keep")
-        r = self.run_install("--uninstall", "--purge", "-y", env={**self.env, "AI_WORKFLOW_STATE": str(self.home)})
+        r = self.run_install("--uninstall", "--purge", "-y", env={**self.env, "AI_BOARD_STATE": str(self.home)})
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("위험", r.stdout)
         self.assertTrue(sentinel.exists() and (self.home / "records" / "mine.md").exists())
 
     def test_refuses_root_and_unrelated_directory(self):
-        r = self.run_install("--uninstall", "--purge", "-y", env={**self.env, "AI_WORKFLOW_STATE": "/"})
+        r = self.run_install("--uninstall", "--purge", "-y", env={**self.env, "AI_BOARD_STATE": "/"})
         self.assertNotEqual(r.returncode, 0)
         other = self.root / "docs"
         other.mkdir()
         (other / "thesis.txt").write_text("keep")
-        r = self.run_install("--uninstall", "--purge", "-y", env={**self.env, "AI_WORKFLOW_STATE": str(other)})
+        r = self.run_install("--uninstall", "--purge", "-y", env={**self.env, "AI_BOARD_STATE": str(other)})
         self.assertNotEqual(r.returncode, 0)
         self.assertTrue((other / "thesis.txt").exists())
 

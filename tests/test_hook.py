@@ -20,8 +20,8 @@ class HookFlowTest(unittest.TestCase):
         self.repo = helpers.TMP / "proj"
         self.repo.mkdir(exist_ok=True)
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
-        self.env = {**os.environ, "AI_WORKFLOW_STATE": str(self.state), "AI_WORKFLOW_MODE": "personal", "AI_WORKFLOW_HOOKS": "1"}
-        self.env.pop("AI_WORKFLOW_RUN", None)
+        self.env = {**os.environ, "AI_BOARD_STATE": str(self.state), "AI_BOARD_MODE": "personal", "AI_BOARD_HOOKS": "1"}
+        self.env.pop("AI_BOARD_RUN", None)
 
     def fire(self, event, **extra):
         data = {"hook_event_name": event, "session_id": "sess-1234-abcd", "cwd": str(self.repo), **extra}
@@ -36,7 +36,7 @@ class HookFlowTest(unittest.TestCase):
     def test_full_turn_without_hook_errors(self):
         self.assertEqual(self.fire("SessionStart", source="startup").returncode, 0)
         r = self.fire("UserPromptSubmit", prompt=f"로그인 고쳐줘 TOKEN=abcd1234efgh")
-        self.assertIn("ai-workflow 현재 모드: personal", r.stdout)
+        self.assertIn("ai-board 현재 모드: personal", r.stdout)
         self.fire("PostToolUse", tool_name="Edit", tool_input={"file_path": str(self.repo / "a.py")}, tool_response={})
         self.fire("Stop", last_assistant_message=f"고쳤습니다. {SECRET} 는 쓰지 않았습니다.\n검토 필요도: 낮음")
         self.assertEqual(self.hook_errors(), [], "훅이 예외로 중단됨")
@@ -64,7 +64,7 @@ class HookFlowTest(unittest.TestCase):
 
     def test_off_mode_records_nothing(self):
         (self.state / "runs").mkdir(parents=True, exist_ok=True)
-        self.env["AI_WORKFLOW_RUN"] = "r1"
+        self.env["AI_BOARD_RUN"] = "r1"
         aiwf.save_json(self.state / "runs" / "r1.json", {"mode": "off"})
         self.fire("UserPromptSubmit", prompt="비밀 요청")
         self.fire("Stop", last_assistant_message="답")

@@ -1,7 +1,7 @@
 """작업 일지: 요청한 사항 · 결정한 사항 · 반영된 사항을 세션마다 md 하나로 남긴다 (증적·재활용용).
 
 - 훅이 세션 기록(s["journal"] = 턴 목록)을 쌓고, 답변이 끝날 때마다 로컬 md 를 다시 쓴다
-    ~/.ai-workflow/records/<프로젝트>/<날짜>_<시각>_<세션8자리>.md   (로컬 사본은 보드 설정과 무관하게 항상 남는다)
+    ~/.ai-board/records/<프로젝트>/<날짜>_<시각>_<세션8자리>.md   (로컬 사본은 보드 설정과 무관하게 항상 남는다)
 - 프로필(계정·기록 레포)이 있으면 같은 파일을 기록 레포의 records/<프로젝트>/ 아래에 올린다 (전송기가 처리)
   세션마다 파일이 따로이고 쓰는 PC 도 하나라서, 여러 PC 에서 작업해도 충돌하지 않는다
 - 꺼짐(off)·건너뛰기(skip) 요청은 기록하지 않는다 (훅이 호출하지 않음)
@@ -37,7 +37,7 @@ def new_jid() -> str:
 
 
 def marker(s: dict) -> str:
-    return f"<!-- ai-workflow session={s.get('id', '')} jid={s.get('jid', '')} -->"
+    return f"<!-- ai-board session={s.get('id', '')} jid={s.get('jid', '')} -->"
 
 
 def rel_path(s: dict, n: int = 1) -> str:
@@ -173,7 +173,7 @@ def render(s: dict) -> str:
     lines = [marker(s), "", f"# {s.get('project')} 작업 일지 — {time.strftime('%Y-%m-%d %H:%M', time.localtime(started))}", "",
              f"- 세션: `{s.get('id', '')[:8]}` · PC: `{socket.gethostname()}`"
              + (f" · 브랜치: `{s['branch']}`" if s.get("branch") else ""),
-             f"- 경로: `{s.get('path')}`", "- 자동 기록 (ai-workflow). 요청 → 결정 → 반영 → 진행 과정(AI 답변·도구 호출 전체) → 결과 보고", ""]
+             f"- 경로: `{s.get('path')}`", "- 자동 기록 (ai-board). 요청 → 결정 → 반영 → 진행 과정(AI 답변·도구 호출 전체) → 결과 보고", ""]
     for n, t in enumerate(turns(s), 1):
         lines += [f"## {n}. {_t(t['t'])} 요청 · 모드 {t.get('mode')}", ""]
         lines += ["> " + l for l in (t.get("request") or "(내용 없음)").splitlines()] + [""]

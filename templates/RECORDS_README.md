@@ -1,7 +1,7 @@
-<!-- ai-workflow:readme -->
+<!-- ai-board:readme -->
 # AI 작업 기록 레포
 
-이 레포는 **ai-workflow** 가 자동으로 관리하는 작업 기록 저장소입니다. (계정 `{{login}}`)
+이 레포는 **ai-board** 가 자동으로 관리하는 작업 기록 저장소입니다. (계정 `{{login}}`)
 AI(Claude Code)로 작업한 내용이 **카드(이슈)** 와 **작업 일지(md)** 로 여기에 쌓이고, 진행 상황은 GitHub Projects 보드에서 봅니다.
 
 - 보드: [{{board_title}}]({{board_url}})
@@ -18,7 +18,7 @@ AI(Claude Code)로 작업한 내용이 **카드(이슈)** 와 **작업 일지(md
 | `README.md` (이 파일) | 설명서 | 설정 때 한 번 |
 
 일지 파일 이름은 `날짜_시각초_세션ID앞8자리-임의값.md` 입니다. 세션마다 파일이 따로이고 이름에 임의값이 섞여 있어서, 같은 프로젝트의 다른 기능을 여러 세션·여러 PC에서 동시에 작업해도 서로 덮어쓰지 않습니다. 같은 이름이 이미 있고 다른 세션의 것이면 `-2`, `-3` 을 붙여 올립니다.
-같은 내용의 로컬 사본은 각 PC의 `~/.ai-workflow/records/` 에도 남습니다.
+같은 내용의 로컬 사본은 각 PC의 `~/.ai-board/records/` 에도 남습니다.
 
 ## 작동 방식
 
@@ -53,7 +53,7 @@ ai-board off | on             # 세션 중 기록 끄기 / 켜기
 
 ## 지우거나 옮길 때
 - 레포를 지우면 카드와 일지가 모두 사라집니다. 보관만 하려면 Archive 하세요.
-- 레포나 보드 이름을 바꾸거나 다른 곳으로 옮기면 `python3 ~/ai-workflow/lib/boardsetup.py --repo <새 이름> --board <번호>` 로 다시 연결하세요.
+- 레포나 보드 이름을 바꾸거나 다른 곳으로 옮기면 `python3 ~/ai-board/lib/boardsetup.py --repo <새 이름> --board <번호>` 로 다시 연결하세요.
 
 ---
-_이 파일은 ai-workflow 가 만들었습니다. 도구 사용법은 ai-workflow 레포의 README 를 참고하세요._
+_이 파일은 ai-board 가 만들었습니다. 도구 사용법은 ai-board 도구 레포의 README 를 참고하세요._

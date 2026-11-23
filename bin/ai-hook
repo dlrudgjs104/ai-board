@@ -2,7 +2,7 @@
 """Claude Code 훅 처리기. claude-personal / claude-work / claude-lite 로 시작한 세션에만 런처가 붙인다.
 
 하는 일
-- 세션 활동(요청, 파일 수정, 커밋, 질문, 답변 완료, 종료)을 ~/.ai-workflow 에 기록한다
+- 세션 활동(요청, 파일 수정, 커밋, 질문, 답변 완료, 종료)을 ~/.ai-board 에 기록한다
 - GitHub Projects 보드 작업을 대기열에 넣고 전송기를 깨운다 (보드가 설정된 personal/work 세션)
     작업 시작 → 카드 생성·AI작업중 / 질문·권한 승인 → 판단필요 / 답변 끝 → 검토대기 + 보고 코멘트
     카드는 파일 수정·커밋·질문·1분 넘는 작업이 있을 때만 만든다 (간단한 질문 세션은 보드에 안 올림)
@@ -28,7 +28,7 @@ from redact import redact  # noqa: E402
 EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 
 
-OFF_NOTE = ("[ai-workflow] 이 세션은 지금 워크플로우가 꺼져 있다 (ai-board on 으로 다시 켠다). 보드·보고 형식 규칙을 "
+OFF_NOTE = ("[ai-board] 이 세션은 지금 워크플로우가 꺼져 있다 (ai-board on 으로 다시 켠다). 보드·보고 형식 규칙을 "
             "적용하지 않고 일반 claude 처럼 작업한다. 시크릿 금지와 되돌리기 어려운 작업의 사전 확인은 유지한다.")
 
 
@@ -38,13 +38,13 @@ def mode_context(rs, mode):
     if mode == "lite":
         return ""       # lite 규칙은 시작할 때 시스템 프롬프트에 들어가 있다
     try:
-        text = (aiwf.ROOT / "rules" / f"{mode}.md").read_text(encoding="utf-8").replace("~/ai-workflow", str(aiwf.ROOT))
+        text = (aiwf.ROOT / "rules" / f"{mode}.md").read_text(encoding="utf-8").replace("~/ai-board", str(aiwf.ROOT))
     except OSError:
         return ""
     if rs.get("injected") == mode:
         m = re.search(r"^> 요약:\s*(.+)$", text, re.M)
-        return f"[ai-workflow 현재 모드: {mode}] {m.group(1)}" if m else ""
-    head = f"[ai-workflow 현재 모드: {mode}]"
+        return f"[ai-board 현재 모드: {mode}] {m.group(1)}" if m else ""
+    head = f"[ai-board 현재 모드: {mode}]"
     rs["injected"] = mode
     aiwf.save_run_state(rs)
     return head + "\n\n" + text
@@ -125,7 +125,7 @@ def remote_note(path):
 
 def brief(s, name, path):
     """세션 시작 때 Claude 에게 넣어 줄 요약."""
-    out = [f"[ai-workflow] 프로젝트 '{name}' 의 지금까지 상황 (자동 생성 요약)"]
+    out = [f"[ai-board] 프로젝트 '{name}' 의 지금까지 상황 (자동 생성 요약)"]
     if ghboard.configured():
         mine = sorted(((int(n), c) for n, c in ghboard.cards().items()
                        if c.get("project") == name and c.get("status") not in ("완료", None)), reverse=True)[:10]
@@ -150,7 +150,7 @@ def brief(s, name, path):
 def guide(mode, name, path):
     """세션을 새로 시작했을 때 사용자 화면에 보여 줄 시작 안내 (명령어 + 처음에 할 일)."""
     label = {"personal": "personal · main 직접 작업, 커밋 전에 묻기", "work": "work · 브랜치 + PR, 병합은 사람", "lite": "lite · 지정 문서만"}[mode]
-    L = [f"━━ ai-workflow 시작 안내  [{label}] ━━", "", (f"프로젝트: {name}" if aiwf.is_repo(path) else f"시작 폴더: {path} (프로젝트는 요청에서 정해집니다)"), ""]
+    L = [f"━━ ai-board 시작 안내  [{label}] ━━", "", (f"프로젝트: {name}" if aiwf.is_repo(path) else f"시작 폴더: {path} (프로젝트는 요청에서 정해집니다)"), ""]
     if mode != "lite":
         board = ghboard.configured()
         if aiwf.is_repo(path):
@@ -168,7 +168,7 @@ def guide(mode, name, path):
               "  ! ai-board off / on   이 세션 기록 끄기·켜기",
               "  (카드는 훅이 자동으로 만들고 옮깁니다. 확인이 끝나면 보드에서 이슈를 닫으면 완료가 됩니다)",
               "", "▶ 기록 위치",
-              "  · 요청·답변·진행 과정 전체: 작업 일지 (기록 레포 records/ + ~/.ai-workflow/records/)",
+              "  · 요청·답변·진행 과정 전체: 작업 일지 (기록 레포 records/ + ~/.ai-board/records/)",
               "  · 요청별 진행 상황: GitHub 보드(ai-board)의 카드. 사람 판단이 필요하면 판단필요로 이동합니다."]
     else:
         L += ["지정한 문서만 읽고 작업합니다. 기록·보드 규칙은 적용되지 않습니다.",
@@ -261,7 +261,7 @@ def main():
                 ghboard.use(s["profile"])
                 board = mode != "lite" and ghboard.configured()
                 s["branch"] = git(path, "branch", "--show-current")
-                notes.append(f"[ai-workflow] 이 세션은 프로젝트 '{name}' ({path}) 작업으로 기록된다. 작업은 이 경로에서 한다.")
+                notes.append(f"[ai-board] 이 세션은 프로젝트 '{name}' ({path}) 작업으로 기록된다. 작업은 이 경로에서 한다.")
         # "#12 진행해줘", "카드 #12" 처럼 보드에 미리 만든 카드를 지정하면 그 카드로 연결
         m = re.match(r"^\s*#(\d{1,6})\b", prompt) or re.search(r"카드\s*#(\d{1,6})", prompt)
         if board and m:

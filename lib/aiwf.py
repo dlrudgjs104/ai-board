@@ -1,6 +1,6 @@
-"""ai-workflow 공용 모듈: 경로, 프로젝트 식별, 세션 상태 저장소.
+"""ai-board 공용 모듈: 경로, 프로젝트 식별, 세션 상태 저장소.
 
-상태 저장소(기본 ~/.ai-workflow, AI_WORKFLOW_STATE 로 변경 가능)
+상태 저장소(기본 ~/.ai-board, AI_BOARD_STATE 로 변경 가능)
   sessions/<세션ID>.json   세션별 현재 상태 (훅이 갱신, 대시보드가 읽음)
   events.jsonl             모든 세션의 활동 기록 (한 줄 = 한 이벤트)
   projects.json            알려진 프로젝트 목록 {경로: {name, path, seen}}
@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-STATE = Path(os.environ.get("AI_WORKFLOW_STATE") or Path.home() / ".ai-workflow")
+STATE = Path(os.environ.get("AI_BOARD_STATE") or Path.home() / ".ai-board")
 SESSIONS = STATE / "sessions"
 EVENTS = STATE / "events.jsonl"
 PROJECTS = STATE / "projects.json"
@@ -195,7 +195,7 @@ MODES = ("personal", "work", "lite")
 
 def run_id():
     """런처가 정해 준 이 claude 실행의 ID. 런처 밖에서 시작했으면 None."""
-    return os.environ.get("AI_WORKFLOW_RUN") or None
+    return os.environ.get("AI_BOARD_RUN") or None
 
 
 def run_file(rid=None) -> Path:
@@ -213,7 +213,7 @@ def save_run_state(rs: dict, rid=None):
 
 
 def launch_mode() -> str:
-    m = os.environ.get("AI_WORKFLOW_MODE", "personal")
+    m = os.environ.get("AI_BOARD_MODE", "personal")
     return m if m in MODES else "personal"
 
 

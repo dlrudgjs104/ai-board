@@ -1,4 +1,4 @@
-# ai-workflow
+# ai-board
 
 여러 프로젝트를 여러 Claude Code 세션으로 동시에 개발할 때, 모든 작업이 **GitHub Projects 보드 하나**에 카드로 실시간 정리되고, 세션이 끊겨도 다음 날 바로 이어서 일하게 해 주는 도구 모음.
 
@@ -30,8 +30,8 @@
 ## 설치 (WSL Ubuntu 기준, 약 5분)
 
 ```bash
-git clone https://github.com/dlrudgjs104/ai-workflow.git ~/ai-workflow
-cd ~/ai-workflow
+git clone https://github.com/dlrudgjs104/ai-board.git ~/ai-board
+cd ~/ai-board
 ./install.sh
 ```
 
@@ -42,7 +42,7 @@ cd ~/ai-workflow
 | 1. 기본 도구 | git, python3, curl, git 사용자 이름·메일 | 없으면 `sudo apt install` |
 | 2. Claude Code | 없으면 공식 설치 스크립트로 설치 | Claude 계정(Pro/Max/Team/Enterprise) 또는 Console API 키. 처음 `claude` 실행 때 로그인 |
 | 3. 명령 등록 | `~/.local/bin` 에 명령 링크, PATH 확인 | 없음 |
-| 4. GitHub 보드 | GitHub CLI 설치·로그인(+`project` 권한), 그 뒤 설정 마법사: 기록 레포(기존 레포 연결, 없으면 ai-board 비공개 생성) → 보드(기존 선택, 없으면 ai-board 생성) | GitHub 계정 |
+| 4. GitHub 보드 | GitHub CLI 설치·로그인(+`project` 권한), 그 뒤 설정 마법사: 기록 레포(기존 레포 연결, 없으면 work 비공개 생성) → 보드(기존 선택, 없으면 ai-board 생성) | GitHub 계정 |
 
 ```bash
 ./install.sh --board      # 보드 연동까지 바로
@@ -54,9 +54,9 @@ cd ~/ai-workflow
 ./install.sh --uninstall --purge --keep-records   # 작업 일지는 남기고 나머지만 삭제
 ```
 
-- `--purge` 가 지우는 것: `~/.ai-workflow`(연결 정보·세션·대기열·작업 일지), 이 도구가 연결한 `gh` 계정 로그인 1개, 백그라운드 전송기.
+- `--purge` 가 지우는 것: `~/.ai-board`(연결 정보·세션·대기열·작업 일지), 이 도구가 연결한 `gh` 계정 로그인 1개, 백그라운드 전송기.
 - **지우지 않는 것:** GitHub 의 기록 레포·보드·카드, 다른 `gh` 계정, `~/.git-credentials`. 그래서 다시 설치하면 마법사가 기존 레포·보드에 다시 연결한다. 새로 만드는 과정까지 시험하려면 마법사에서 새 레포 이름을 입력하거나 GitHub 웹에서 지운 뒤 진행한다.
-- 홈 폴더나 `/`, ai-workflow 상태 폴더가 아닌 곳은 지우지 않는다. 기록 레포에 올라가지 않은 일지와 아직 보내지 않은 대기열은 복구할 수 없으니 `--dry-run` 으로 먼저 확인한다.
+- 홈 폴더나 `/`, ai-board 상태 폴더가 아닌 곳은 지우지 않는다. 기록 레포에 올라가지 않은 일지와 아직 보내지 않은 대기열은 복구할 수 없으니 `--dry-run` 으로 먼저 확인한다.
 
 보드의 컬럼, "이슈 닫힘 ↔ 완료" 자동화, 완료 카드 자동 보관까지 설치 때 자동으로 설정된다. 자세한 계정·권한·알림 설정은 [docs/github-setup.md](docs/github-setup.md).
 
@@ -66,17 +66,17 @@ cd ~/ai-workflow
 
 ### 0) 초기 설정 — GitHub 계정 하나, 1회
 ```bash
-./install.sh --board                            # 마법사: 로그인된 계정 → 기록 레포(기존 것 또는 ai-board 생성) → 보드(기존 것 또는 ai-board 생성)
+./install.sh --board                            # 마법사: 로그인된 계정 → 기록 레포(기존 것 또는 work 생성) → 보드(기존 것 또는 ai-board 생성)
 ./install.sh --reconnect                        # 이미 연결돼 있어도 다시 고르기 (계정을 바꿨을 때 등)
 python3 lib/boardsetup.py --repo ai-log --board-title "내 보드" -y   # 묻지 않고 이름 지정
 ai-board status                                 # 연결된 계정·레포·보드·대기열 점검
 ```
 - **계정은 하나만 쓴다.** 마법사가 `gh` 에 로그인된 계정 목록을 보여 주고, 그중 하나를 고르거나 "다른 계정으로 새로 로그인"을 고를 수 있다. 고른 계정의 비공개 기록 레포 하나와 보드 하나에 모든 프로젝트의 카드가 쌓인다. 계정을 바꾸려면 `./install.sh --reconnect`. 묻지 않고 지정하려면 `python3 lib/boardsetup.py --account <이름>`.
-- **기록 레포:** 마법사가 "기존에 연결할 레포 이름"을 묻는다. 엔터를 치면 `<내계정>/ai-board` 를 쓰고, 없으면 비공개로 만든다. 카드는 이 레포의 이슈다(이슈 기능이 꺼져 있으면 켠다).
+- **기록 레포:** 마법사가 "기존에 연결할 레포 이름"을 묻는다. 엔터를 치면 `<내계정>/work` 를 쓰고, 없으면 비공개로 만든다. 카드는 이 레포의 이슈다(이슈 기능이 꺼져 있으면 켠다).
 - **보드:** 목록에서 번호로 기존 보드를 고르고, 엔터면 `ai-board` 를 쓰고(없으면 새로 만든다), 새 이름을 입력하면 그 이름으로 만든다.
-- **기존 것은 연결한다.** 레포가 이미 있으면 그대로 연결하고(레포 첫 화면에 보이도록 설명서를 `README.md` 로 올린다. 직접 쓴 README 가 있으면 건드리지 않고 `AI-WORKFLOW.md` 로 추가), 같은 이름의 보드가 있으면 재사용한다. 이름은 `--repo`, `--board-title`, `--board 번호` 로 자유롭게 정한다.
-- **설명서는 `README.md` 로 올라간다** (카드·일지·보드 흐름·명령). 새 레포나 비어 있는 README 는 대체하고, 이 도구가 만든 것은 다시 실행할 때 갱신한다. 직접 쓴 README 는 보존하고 `AI-WORKFLOW.md` 로 올린다 (덮어쓰려면 `--readme`).
-- 프로젝트 레포에는 아무 파일도 만들지 않는다 (설정은 `~/.ai-workflow/profiles.json`).
+- **기존 것은 연결한다.** 레포가 이미 있으면 그대로 연결하고(레포 첫 화면에 보이도록 설명서를 `README.md` 로 올린다. 직접 쓴 README 가 있으면 건드리지 않고 `AI-BOARD.md` 로 추가), 같은 이름의 보드가 있으면 재사용한다. 이름은 `--repo`, `--board-title`, `--board 번호` 로 자유롭게 정한다.
+- **설명서는 `README.md` 로 올라간다** (카드·일지·보드 흐름·명령). 새 레포나 비어 있는 README 는 대체하고, 이 도구가 만든 것은 다시 실행할 때 갱신한다. 직접 쓴 README 는 보존하고 `AI-BOARD.md` 로 올린다 (덮어쓰려면 `--readme`).
+- 프로젝트 레포에는 아무 파일도 만들지 않는다 (설정은 `~/.ai-board/profiles.json`).
 
 ### 시작 안내
 `claude-personal` / `claude-work` / `claude-lite` 로 새로 시작하면 첫 화면에 안내가 나온다: 처음에 할 일("○○ 프로젝트 파악해줘" → 이어서 요청 → 확인 후 완료 처리), 세션 안에서 쓸 `! ai-board …` 명령 목록, 기록 위치. 보드가 연결되지 않았으면 그 설정 방법도 같이 안내한다. 이어하기(`--resume`)·`/clear` 때는 나오지 않는다.
@@ -85,7 +85,7 @@ ai-board status                                 # 연결된 계정·레포·보�
 
 ### 작업 일지 (증적용 — 요청 · 결정 · 반영 · 진행 과정 · 결과)
 세션마다 일지 md 하나가 자동으로 쌓인다: 요청 원문 → 결정한 사항 → 반영된 사항(수정 파일·커밋) → **진행 과정(AI 가 중간에 한 답변 전체와 도구 호출: 실행한 명령·읽거나 고친 파일)** → 결과 보고(마지막 답변). 요청·답변은 자르지 않고, 내부 생각(thinking)과 도구 결과 원문은 싣지 않는다.
-- 로컬: `~/.ai-workflow/records/<프로젝트>/날짜_시각_세션.md` (보드를 안 써도 항상 남음)
+- 로컬: `~/.ai-board/records/<프로젝트>/날짜_시각_세션.md` (보드를 안 써도 항상 남음)
 - 기록 레포: 같은 파일이 `records/<프로젝트>/` 로 올라간다. 파일 이름은 `날짜_시각초_세션ID8자리-임의값.md` 로, 같은 프로젝트의 다른 기능을 여러 세션·여러 PC 에서 동시에 해도 덮어쓰지 않는다 (같은 이름이 다른 세션 것이면 `-2` 를 붙임).
 - 결정 사항은 AI가 답변 끝 보고의 `### 결정 사항` 목록과 AskUserQuestion 답변에서 가져온다. `off`·`skip` 한 요청은 기록되지 않는다.
 
@@ -114,7 +114,7 @@ ai-board status                                 # 연결된 계정·레포·보�
 
 - 적용은 **다음 요청부터**다. 작업 중간에 `off` 하면 열려 있던 카드는 검토대기로 정리된다.
 - 모드별 규칙(`personal.md`, `work.md`)은 시스템 프롬프트가 아니라 훅이 요청마다 넣어 준다 (처음엔 전문, 평소엔 한 줄 요약).
-- 상태는 런처 실행 단위(`~/.ai-workflow/runs/`)로 저장되므로 `/clear` 해도 유지되고, `claude-personal` 을 새로 시작하면 켜진 상태로 돌아간다.
+- 상태는 런처 실행 단위(`~/.ai-board/runs/`)로 저장되므로 `/clear` 해도 유지되고, `claude-personal` 을 새로 시작하면 켜진 상태로 돌아간다.
 - 모드(personal/work/lite)는 **시작할 때 정한다.** 중간에 바꾸려면 세션을 새로 시작한다. 회사 내용이 민감한 요청은 `off` 로 끄고 하는 것을 권한다.
 
 ### 3) 보드
@@ -137,7 +137,7 @@ ai-board status                            # 로그인·보드·대기열·최�
 ## 구성
 
 ```
-ai-workflow/
+ai-board/
 ├─ install.sh            설치·점검·제거
 ├─ bin/
 │   ├─ claude-personal   모드 런처 (claude-work·claude-lite 는 링크). 규칙 주입 + 훅 연결
@@ -159,14 +159,14 @@ ai-workflow/
 └─ docs/                 github-setup.md, 배경 분석
 ```
 
-로컬 기록은 `~/.ai-workflow/` (세션 상태, 활동 기록, 작업 일지, 연결 정보, 보드 설정·카드·대기열)에 쌓인다.
+로컬 기록은 `~/.ai-board/` (세션 상태, 활동 기록, 작업 일지, 연결 정보, 보드 설정·카드·대기열)에 쌓인다.
 
 ## 주의
 - 기록 레포와 보드는 비공개로 둔다. 요청 원문, 수정 파일 목록, 마지막 답변이 카드에 올라간다.
 - 이 레포에는 시크릿을 넣지 않는다. GitHub 토큰은 GitHub CLI 가 따로 보관한다.
-- 훅을 잠시 끄려면 `AI_WORKFLOW_HOOKS=0 claude-personal`.
+- 훅을 잠시 끄려면 `AI_BOARD_HOOKS=0 claude-personal`.
 ## 테스트
 ```bash
 python3 -m unittest discover -s tests -v
 ```
-GitHub·네트워크를 쓰지 않고 임시 폴더에서 돈다 (실제 `~/.ai-workflow` 는 건드리지 않음). 훅을 실제 프로세스로 돌려 보는 흐름 테스트(`tests/test_hook.py`)가 포함되어 있다.
+GitHub·네트워크를 쓰지 않고 임시 폴더에서 돈다 (실제 `~/.ai-board` 는 건드리지 않음). 훅을 실제 프로세스로 돌려 보는 흐름 테스트(`tests/test_hook.py`)가 포함되어 있다.

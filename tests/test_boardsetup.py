@@ -1,4 +1,4 @@
-"""설치 마법사(run_init)가 기본으로 ai-board 레포·보드를 만들고, 이미 있는 work 레포·AI Board 보드는 건드리지 않는지 가짜 GitHub 로 검증."""
+"""설치 마법사(run_init)가 기본으로 work 레포와 ai-board 보드를 만들고, 이미 있는 work 레포는 재사용하고 이름이 다른 보드('AI Board')에는 붙지 않는지 가짜 GitHub 로 검증."""
 import json
 import unittest
 from types import SimpleNamespace
@@ -69,31 +69,31 @@ class WizardDefaultsTest(unittest.TestCase):
         boardsetup.run_init({"yes": True, **opts})
         return aiwf.profiles_conf()["profiles"][aiwf.SLOT]
 
-    def test_defaults_are_ai_board(self):
-        self.assertEqual((boardsetup.DEFAULT_REPO, boardsetup.DEFAULT_BOARD), ("ai-board", "ai-board"))
+    def test_defaults_are_work_repo_and_ai_board(self):
+        self.assertEqual((boardsetup.DEFAULT_REPO, boardsetup.DEFAULT_BOARD), ("work", "ai-board"))
 
-    def test_fresh_install_creates_ai_board_repo_and_board(self):
+    def test_fresh_install_creates_work_repo_and_ai_board(self):
         gh = FakeGitHub()
         conf = self.run_wizard(gh)
-        self.assertEqual(gh.created_repos, ["ai-board"])
+        self.assertEqual(gh.created_repos, ["work"])
         self.assertEqual(gh.created_boards, ["ai-board"])
-        self.assertEqual((conf["repo"], conf["board_title"]), ("me/ai-board", "ai-board"))
+        self.assertEqual((conf["repo"], conf["board_title"]), ("me/work", "ai-board"))
 
-    def test_existing_work_repo_and_AI_Board_are_ignored(self):
-        """기존 work 레포와 'AI Board' 보드가 있어도 연결하지 않고 ai-board 를 새로 만든다."""
+    def test_existing_work_repo_is_reused_but_AI_Board_is_ignored(self):
+        """기존 work 레포는 그대로 연결하고, 이름이 다른 'AI Board' 보드에는 붙지 않고 ai-board 를 새로 만든다."""
         gh = FakeGitHub(repos={"me/work"}, boards=[{"number": 1, "title": "AI Board"}])
         conf = self.run_wizard(gh)
-        self.assertEqual(gh.created_repos, ["ai-board"])
+        self.assertEqual(gh.created_repos, [])
         self.assertEqual(gh.created_boards, ["ai-board"])
-        self.assertEqual(conf["repo"], "me/ai-board")
+        self.assertEqual(conf["repo"], "me/work")
         self.assertNotEqual(conf["board"], 1)                         # 옛 보드 #1 에 붙지 않았다
         self.assertEqual(ghboard.conf()["title"], "ai-board")
 
-    def test_existing_ai_board_repo_and_board_are_reused(self):
-        gh = FakeGitHub(repos={"me/ai-board"}, boards=[{"number": 5, "title": "ai-board"}])
+    def test_existing_work_repo_and_ai_board_are_reused(self):
+        gh = FakeGitHub(repos={"me/work"}, boards=[{"number": 5, "title": "ai-board"}])
         conf = self.run_wizard(gh)
         self.assertEqual((gh.created_repos, gh.created_boards), ([], []))   # 두 번째 실행은 새로 만들지 않는다
-        self.assertEqual((conf["repo"], conf["board"]), ("me/ai-board", 5))
+        self.assertEqual((conf["repo"], conf["board"]), ("me/work", 5))
 
     def test_explicit_names_still_win(self):
         gh = FakeGitHub()
