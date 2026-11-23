@@ -43,15 +43,16 @@ warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
 bad()  { printf '  \033[31m✘\033[0m %s\n' "$*"; }
 step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 note() { printf '    \033[2m%s\033[0m\n' "$*"; }   # 보조 설명 (흐린 글씨)
-ask()  { # ask "질문" → 0(예)/1(아니오)
+ask()  { # ask "질문" [y|n(기본값, 생략 시 n)] → 0(예)/1(아니오)
   [[ $yes == 1 ]] && return 0
   [[ -t 0 ]] || return 1
-  local r
-  while true; do   # y/n 이외의 입력은 다시 묻는다 (엔터는 기본값 n)
-    read -r -p "  ? $1 [y/n, 기본: n] " r || return 1      # 입력이 끊기면(EOF) 아니오
+  local r def=${2:-n}
+  while true; do   # y/n 이외의 입력은 다시 묻는다 (엔터는 기본값)
+    read -r -p "  ? $1 [y/n, 기본: $def] " r || return 1      # 입력이 끊기면(EOF) 아니오
     case "${r,,}" in
       y|yes|예|네) return 0 ;;
-      ""|n|no|아니오|아니) return 1 ;;
+      "") [[ $def == y ]]; return ;;
+      n|no|아니오|아니) return 1 ;;
       *) echo "    y 또는 n 으로 입력해 주세요." ;;
     esac
   done
@@ -225,7 +226,7 @@ if [[ $board == ask && $mode == install ]]; then
   echo "  준비물: GitHub 계정, GitHub CLI(gh, 없으면 설치를 도와 드립니다)"
   note "카드는 작업 레포가 아닌 비공개 '기록 레포'의 이슈로 쌓입니다 (기본 이름: work)."
   echo
-  ask "지금 연동할까요? (나중에는 ./install.sh --board)" && board=yes || board=no
+  ask "지금 연동할까요? (나중에는 ./install.sh --board)" y && board=yes || board=no
 fi
 
 if [[ $mode == check || $board == yes ]]; then
