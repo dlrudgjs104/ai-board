@@ -154,7 +154,7 @@ def guide(mode, name, path):
     if mode != "lite":
         board = ghboard.configured()
         if aiwf.is_repo(path):
-            first = f'  1. "{name} 프로젝트 파악해줘" 처럼 요청하면 구조·최근 작업을 읽고 현황을 정리합니다.'
+            first = '  1. "로그인 기능 구현해줘" 처럼 평소대로 요청하면 됩니다. 구조·최근 작업은 AI가 알아서 파악합니다.'
         else:
             first = ('  1. 여기는 프로젝트 폴더가 아니라서, 작업할 프로젝트의 폴더 이름을 넣어 요청하세요. 예: "coinsensor 프로젝트 파악해줘"\n'
                      '     (이 폴더 아래의 프로젝트를 찾아 그 프로젝트의 작업으로 기록하고, 구조·최근 작업을 정리합니다)')

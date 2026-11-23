@@ -295,7 +295,7 @@ if [[ -f "$STATE_DIR/profiles.json" || -f "$STATE_DIR/board.json" ]]; then
     작업할 프로젝트 폴더에서 시작
       cd ~/myproject
       claude-personal            개인 프로젝트  (회사 프로젝트는 claude-work)
-      → 열린 Claude 에게 "myproject 파악해줘" 처럼 평소대로 요청하면 됩니다.
+      → 열린 Claude 에게 "로그인 기능 구현해줘" 처럼 평소대로 요청하면 됩니다.
 
     필요할 때
       ai-board                   기록 보드 열기
